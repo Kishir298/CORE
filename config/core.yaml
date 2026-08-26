@@ -1,0 +1,11 @@
+core:
+  name: "C.O.R.E."
+  version: "0.1.0"
+
+environment: "development"
+
+communication:
+  enabled: true
+
+network:
+  enabled: false
