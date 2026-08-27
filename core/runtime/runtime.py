@@ -11,14 +11,15 @@ class Runtime:
     """
     Controls the lifecycle of C.O.R.E.
 
-    Runtime is responsible for coordinating startup, initialization,
-    running state, shutdown, and fatal runtime failures.
+    Runtime coordinates component startup, shutdown, failure handling,
+    and the active runtime state.
     """
 
     def __init__(self) -> None:
         self._state = RuntimeState.STOPPED
         self._components: list[tuple[str, Callable[[], None]]] = []
         self._shutdown_handlers: list[tuple[str, Callable[[], None]]] = []
+        self._initialized_components: list[str] = []
         self._error: Exception | None = None
 
     @property
@@ -29,13 +30,25 @@ class Runtime:
     def error(self) -> Exception | None:
         return self._error
 
+    @property
+    def is_running(self) -> bool:
+        return self._state == RuntimeState.RUNNING
+
     def register_component(
         self,
         name: str,
         initializer: Callable[[], None],
         shutdown: Callable[[], None] | None = None,
     ) -> None:
-        """Register a component that participates in the runtime lifecycle."""
+        """Register a component in the runtime lifecycle."""
+
+        if self._state != RuntimeState.STOPPED:
+            raise RuntimeError(
+                "Components cannot be registered while runtime is active."
+            )
+
+        if any(component_name == name for component_name, _ in self._components):
+            raise RuntimeError(f"Component already registered: {name}")
 
         self._components.append((name, initializer))
 
@@ -43,7 +56,7 @@ class Runtime:
             self._shutdown_handlers.append((name, shutdown))
 
     def start(self) -> None:
-        """Start and initialize C.O.R.E."""
+        """Initialize all registered components and enter RUNNING state."""
 
         if self._state == RuntimeState.RUNNING:
             return
@@ -57,27 +70,29 @@ class Runtime:
             )
 
         self._error = None
+        self._initialized_components.clear()
         self._state = RuntimeState.STARTING
 
         try:
             self._state = RuntimeState.INITIALIZING
 
-            for _, initializer in self._components:
+            for name, initializer in self._components:
                 initializer()
+                self._initialized_components.append(name)
 
             self._state = RuntimeState.RUNNING
 
         except Exception as exc:
             self._error = exc
             self._state = RuntimeState.FAILED
-
             self._shutdown_initialized_components()
+
             raise RuntimeError(
                 "C.O.R.E. runtime failed during initialization."
             ) from exc
 
     def stop(self) -> None:
-        """Stop C.O.R.E. cleanly."""
+        """Stop the runtime and shut down initialized components."""
 
         if self._state == RuntimeState.STOPPED:
             return
@@ -90,10 +105,11 @@ class Runtime:
         try:
             self._shutdown_initialized_components()
         finally:
+            self._initialized_components.clear()
             self._state = RuntimeState.STOPPED
 
     def restart(self) -> None:
-        """Restart C.O.R.E."""
+        """Stop and start the runtime."""
 
         if self._state != RuntimeState.STOPPED:
             self.stop()
@@ -101,20 +117,27 @@ class Runtime:
         self.start()
 
     def _shutdown_initialized_components(self) -> None:
-        """Run shutdown handlers in reverse registration order."""
+        """Shut down only components that successfully initialized."""
 
-        for _, shutdown in reversed(self._shutdown_handlers):
+        initialized = set(self._initialized_components)
+
+        for name, shutdown in reversed(self._shutdown_handlers):
+            if name not in initialized:
+                continue
+
             try:
                 shutdown()
             except Exception:
-                # Shutdown should continue even if one component fails.
                 continue
 
     def component_count(self) -> int:
         return len(self._components)
 
+    def initialized_component_count(self) -> int:
+        return len(self._initialized_components)
+
     def clear_components(self) -> None:
-        """Remove all registered lifecycle components."""
+        """Remove all registered components while stopped."""
 
         if self._state != RuntimeState.STOPPED:
             raise RuntimeError(
@@ -123,3 +146,4 @@ class Runtime:
 
         self._components.clear()
         self._shutdown_handlers.clear()
+        self._initialized_components.clear()
