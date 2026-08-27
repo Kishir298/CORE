@@ -1,4 +1,3 @@
-from collections import defaultdict
 from collections.abc import Callable
 
 from core.errors import MessageError
@@ -44,4 +43,12 @@ class LocalCommunication:
         return endpoint in self._handlers
 
     def endpoint_count(self) -> int:
+        return len(self._handlers)
+
+    def clear(self) -> None:
+        """Remove all registered communication endpoints."""
+        self._handlers.clear()
+
+    def count(self) -> int:
+        """Return the number of registered communication endpoints."""
         return len(self._handlers)
