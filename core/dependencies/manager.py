@@ -12,18 +12,18 @@ class DependencyManager:
         component_id: str,
         dependencies: list[str] | None = None,
     ) -> None:
-        """Register a component and its dependencies."""
-
         if component_id not in self._dependencies:
             self._dependencies[component_id] = set()
 
-        if dependencies:
-            self._dependencies[component_id].update(dependencies)
+        self._dependencies[component_id].update(dependencies or [])
 
     def unregister(self, component_id: str) -> None:
-        """Remove a component from the dependency graph."""
+        if component_id not in self._dependencies:
+            raise DependencyError(
+                f"Component not registered: {component_id}"
+            )
 
-        self._dependencies.pop(component_id, None)
+        del self._dependencies[component_id]
 
         for dependencies in self._dependencies.values():
             dependencies.discard(component_id)
@@ -33,13 +33,14 @@ class DependencyManager:
         component_id: str,
         dependencies: list[str],
     ) -> None:
-        """Replace the dependencies of a component."""
+        if component_id not in self._dependencies:
+            raise DependencyError(
+                f"Component not registered: {component_id}"
+            )
 
         self._dependencies[component_id] = set(dependencies)
 
     def get_dependencies(self, component_id: str) -> list[str]:
-        """Return direct dependencies of a component."""
-
         if component_id not in self._dependencies:
             raise DependencyError(
                 f"Component not registered: {component_id}"
@@ -48,12 +49,6 @@ class DependencyManager:
         return sorted(self._dependencies[component_id])
 
     def get_start_order(self, component_id: str) -> list[str]:
-        """
-        Return dependencies in the order they must be initialized.
-
-        The requested component itself is excluded from the result.
-        """
-
         if component_id not in self._dependencies:
             raise DependencyError(
                 f"Component not registered: {component_id}"
@@ -79,9 +74,7 @@ class DependencyManager:
 
             visiting.add(current)
 
-            for dependency in sorted(
-                self._dependencies[current]
-            ):
+            for dependency in sorted(self._dependencies[current]):
                 visit(dependency)
 
                 if dependency != component_id and dependency not in order:
@@ -99,8 +92,6 @@ class DependencyManager:
         component_id: str,
         dependency_id: str,
     ) -> bool:
-        """Check whether a component directly depends on another."""
-
         if component_id not in self._dependencies:
             raise DependencyError(
                 f"Component not registered: {component_id}"
@@ -109,8 +100,6 @@ class DependencyManager:
         return dependency_id in self._dependencies[component_id]
 
     def validate(self) -> None:
-        """Validate the entire dependency graph."""
-
         for component_id in self._dependencies:
             self.get_start_order(component_id)
 
