@@ -5,18 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "core"
 version = "0.1.0"
-description = "C.O.R.E. - Communication, Organization and Resource Engine"
+description = "Communication, Organization and Resource Engine"
 requires-python = ">=3.10"
-dependencies = [
-    "PyYAML>=6.0",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_functions = ["test_*"]
+pythonpath = ["."]
