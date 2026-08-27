@@ -9,15 +9,11 @@ from core.resources import ResourceRegistry
 from core.routing import Router
 from core.runtime import Runtime
 from core.security import SecurityManager
-from core.services import ServiceManager
+from core.services import ServiceManager, Service
 
 
 class CoreApplication:
-    """
-    Top-level C.O.R.E. application.
-
-    Owns and coordinates the major C.O.R.E. subsystems.
-    """
+    """Top-level C.O.R.E. application."""
 
     def __init__(self) -> None:
         self.runtime = Runtime()
@@ -28,23 +24,23 @@ class CoreApplication:
         self.communication = LocalCommunication()
         self.resources = ResourceRegistry()
         self.organization = OrganizationEngine()
-        self.routing = Router(self.communication)
         self.events = EventBus()
         self.health = HealthMonitor()
         self.dependencies = DependencyManager()
         self.security = SecurityManager()
         self.services = ServiceManager()
 
+        self.routing = Router(self.communication)
+
         self._initialized = False
 
         self._register_runtime_components()
         self._register_dependencies()
+        self._register_internal_services()
 
         self._initialized = True
 
     def _register_runtime_components(self) -> None:
-        """Register application lifecycle hooks with the runtime."""
-
         self.runtime.register_component(
             "core",
             self._initialize,
@@ -52,8 +48,6 @@ class CoreApplication:
         )
 
     def _register_dependencies(self) -> None:
-        """Register C.O.R.E. subsystem dependencies."""
-
         dependencies = {
             "configuration": [],
             "logging": ["configuration"],
@@ -81,8 +75,53 @@ class CoreApplication:
 
         self.dependencies.validate()
 
+    def _register_internal_services(self) -> None:
+        """Register C.O.R.E.'s internal subsystem services."""
+
+        internal_services = [
+            Service(
+                service_id="communication",
+                name="Communication",
+                version="0.1.0",
+                dependencies=["events", "security"],
+            ),
+            Service(
+                service_id="events",
+                name="Event System",
+                version="0.1.0",
+                dependencies=[],
+            ),
+            Service(
+                service_id="resources",
+                name="Resource Manager",
+                version="0.1.0",
+                dependencies=["configuration"],
+            ),
+            Service(
+                service_id="organization",
+                name="Organization Engine",
+                version="0.1.0",
+                dependencies=["resources"],
+            ),
+            Service(
+                service_id="routing",
+                name="Data Router",
+                version="0.1.0",
+                dependencies=["communication"],
+            ),
+            Service(
+                service_id="health",
+                name="Health Monitor",
+                version="0.1.0",
+                dependencies=["events"],
+            ),
+        ]
+
+        for service in internal_services:
+            self.services.register(service)
+
     def _initialize(self) -> None:
-        """Initialize C.O.R.E. application state."""
+        """Initialize C.O.R.E. subsystems."""
 
         self._register_health_checks()
 
@@ -91,42 +130,22 @@ class CoreApplication:
         self.events.emit(
             event_type="SYSTEM_STARTED",
             source="core",
-            payload={
-                "state": "running",
-            },
+            payload={"state": "running"},
         )
 
     def _register_health_checks(self) -> None:
-        """Register health checks for core subsystems."""
+        checks = {
+            "runtime": self._check_runtime,
+            "communication": self._check_communication,
+            "events": self._check_events,
+            "resources": self._check_resources,
+            "services": self._check_services,
+        }
 
-        self.health.register(
-            "runtime",
-            self._check_runtime,
-        )
-
-        self.health.register(
-            "communication",
-            self._check_communication,
-        )
-
-        self.health.register(
-            "events",
-            self._check_events,
-        )
-
-        self.health.register(
-            "resources",
-            self._check_resources,
-        )
-
-        self.health.register(
-            "services",
-            self._check_services,
-        )
+        for component_id, check in checks.items():
+            self.health.register(component_id, check)
 
     def _check_runtime(self) -> HealthResult:
-        """Check whether the C.O.R.E. runtime is running."""
-
         healthy = self.runtime.state.value == "running"
 
         return HealthResult(
@@ -144,8 +163,6 @@ class CoreApplication:
         )
 
     def _check_communication(self) -> HealthResult:
-        """Check the local communication subsystem."""
-
         return HealthResult(
             component_id="communication",
             status=HealthStatus.HEALTHY,
@@ -153,8 +170,6 @@ class CoreApplication:
         )
 
     def _check_events(self) -> HealthResult:
-        """Check the event subsystem."""
-
         return HealthResult(
             component_id="events",
             status=HealthStatus.HEALTHY,
@@ -162,8 +177,6 @@ class CoreApplication:
         )
 
     def _check_resources(self) -> HealthResult:
-        """Check the resource registry."""
-
         return HealthResult(
             component_id="resources",
             status=HealthStatus.HEALTHY,
@@ -171,8 +184,6 @@ class CoreApplication:
         )
 
     def _check_services(self) -> HealthResult:
-        """Check the service manager."""
-
         return HealthResult(
             component_id="services",
             status=HealthStatus.HEALTHY,
@@ -180,15 +191,14 @@ class CoreApplication:
         )
 
     def _shutdown(self) -> None:
-        """Clean up application state."""
+        """Cleanly shut down C.O.R.E."""
 
-        self.events.emit(
-            event_type="SYSTEM_STOPPING",
-            source="core",
-            payload={
-                "state": "stopping",
-            },
-        )
+        if self.events:
+            self.events.emit(
+                event_type="SYSTEM_STOPPING",
+                source="core",
+                payload={"state": "stopping"},
+            )
 
         self.services.clear()
         self.routing.clear()
@@ -220,9 +230,8 @@ class CoreApplication:
         """Restart C.O.R.E."""
 
         self.stop()
-
         self._register_dependencies()
-
+        self._register_internal_services()
         self.runtime.start()
 
     def health_check(self):
@@ -232,12 +241,8 @@ class CoreApplication:
 
     @property
     def state(self):
-        """Return the current runtime state."""
-
         return self.runtime.state
 
     @property
     def is_running(self) -> bool:
-        """Return whether C.O.R.E. is running."""
-
         return self.runtime.state.value == "running"

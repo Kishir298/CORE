@@ -65,8 +65,34 @@ class ResourceRegistry:
 
         return resource
 
-    def list(self) -> list[Resource]:
-        return list(self._resources.values())
+    def mark_seen(self, resource_id: str) -> Resource:
+        resource = self.get(resource_id)
+        resource.mark_seen()
+        return resource
+
+    def list(
+        self,
+        *,
+        resource_type: str | None = None,
+        status: str | None = None,
+    ) -> list[Resource]:
+        resources = list(self._resources.values())
+
+        if resource_type is not None:
+            resources = [
+                resource
+                for resource in resources
+                if resource.resource_type == resource_type
+            ]
+
+        if status is not None:
+            resources = [
+                resource
+                for resource in resources
+                if resource.status == status
+            ]
+
+        return resources
 
     def count(self) -> int:
         return len(self._resources)

@@ -1,92 +1,81 @@
-from core.errors import CoreError
+from collections import defaultdict
+from typing import Iterable
 
-from .models import OrganizationEntry
-
-
-class OrganizationError(CoreError):
-    """Base exception for organization errors."""
-
-
-class OrganizationEntryAlreadyExists(OrganizationError):
-    """Raised when an entry already exists."""
-
-
-class OrganizationEntryNotFound(OrganizationError):
-    """Raised when an entry does not exist."""
+from core.resources import Resource
 
 
 class OrganizationEngine:
-    """Organizes resources and system information for C.O.R.E."""
+    """Organizes resources into searchable categories."""
 
     def __init__(self) -> None:
-        self._entries: dict[str, OrganizationEntry] = {}
+        self._categories: dict[str, set[str]] = defaultdict(set)
 
-    def add(self, entry: OrganizationEntry) -> OrganizationEntry:
-        if entry.entry_id in self._entries:
-            raise OrganizationEntryAlreadyExists(
-                f"Organization entry already exists: {entry.entry_id}"
-            )
+    def categorize(self, resource: Resource) -> None:
+        """Add a resource to its resource-type category."""
 
-        self._entries[entry.entry_id] = entry
-        return entry
+        self._categories[resource.resource_type].add(
+            resource.resource_id
+        )
 
-    def remove(self, entry_id: str) -> OrganizationEntry:
-        entry = self.get(entry_id)
-        del self._entries[entry_id]
-        return entry
+    def uncategorize(self, resource: Resource) -> None:
+        """Remove a resource from its category."""
 
-    def get(self, entry_id: str) -> OrganizationEntry:
-        try:
-            return self._entries[entry_id]
-        except KeyError as exc:
-            raise OrganizationEntryNotFound(
-                f"Organization entry not found: {entry_id}"
-            ) from exc
+        category = self._categories.get(resource.resource_type)
 
-    def list(self) -> list[OrganizationEntry]:
-        return list(self._entries.values())
+        if category is None:
+            return
 
-    def by_category(self, category: str) -> list[OrganizationEntry]:
-        return [
-            entry
-            for entry in self._entries.values()
-            if entry.category == category
-        ]
+        category.discard(resource.resource_id)
 
-    def by_resource(self, resource_id: str) -> list[OrganizationEntry]:
-        return [
-            entry
-            for entry in self._entries.values()
-            if entry.resource_id == resource_id
-        ]
+        if not category:
+            del self._categories[resource.resource_type]
 
-    def update(
+    def move(
         self,
-        entry_id: str,
-        *,
-        category: str | None = None,
-        name: str | None = None,
-        resource_id: str | None = None,
-        metadata: dict | None = None,
-    ) -> OrganizationEntry:
-        entry = self.get(entry_id)
+        resource: Resource,
+        resource_type: str,
+    ) -> None:
+        """Move a resource into another category."""
 
-        if category is not None:
-            entry.category = category
+        self.uncategorize(resource)
 
-        if name is not None:
-            entry.name = name
+        resource.resource_type = resource_type
 
-        if resource_id is not None:
-            entry.resource_id = resource_id
+        self.categorize(resource)
 
-        if metadata is not None:
-            entry.metadata = metadata
+    def get_category(self, resource_type: str) -> list[str]:
+        """Return resource IDs in a category."""
 
-        return entry
+        return sorted(
+            self._categories.get(resource_type, set())
+        )
+
+    def categories(self) -> list[str]:
+        """Return all known categories."""
+
+        return sorted(self._categories.keys())
+
+    def contains(
+        self,
+        resource_type: str,
+        resource_id: str,
+    ) -> bool:
+        """Check whether a resource belongs to a category."""
+
+        return resource_id in self._categories.get(
+            resource_type,
+            set(),
+        )
 
     def count(self) -> int:
-        return len(self._entries)
+        """Return the number of categories."""
+
+        return len(self._categories)
 
     def clear(self) -> None:
-        self._entries.clear()
+        """Clear all organization data."""
+
+        self._categories.clear()
+
+    def __iter__(self) -> Iterable[str]:
+        return iter(self._categories)
