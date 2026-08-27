@@ -55,12 +55,7 @@ def execute(
     args: argparse.Namespace,
     runtime: Runtime,
 ) -> int:
-    """
-    Execute a single CLI command.
-
-    This function intentionally does not block. Long-running process
-    behavior belongs to main().
-    """
+    """Execute a single non-blocking CLI command."""
 
     if args.command == "start":
         runtime.start()
@@ -100,9 +95,7 @@ def execute(
 
 
 def run_application(app: CoreApplication) -> int:
-    """
-    Start the real C.O.R.E. application and keep the process alive.
-    """
+    """Run the real C.O.R.E. application until interrupted."""
 
     try:
         app.start()
