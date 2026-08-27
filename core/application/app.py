@@ -40,10 +40,104 @@ class CoreApplication:
         self._initialized = True
 
     def _register_runtime_components(self) -> None:
+        """
+        Register all C.O.R.E. subsystems with the runtime.
+
+        Runtime dependencies mirror the dependency graph maintained by
+        DependencyManager so lifecycle orchestration follows the same
+        architecture used by the rest of the application.
+        """
+
+        self.runtime.register_component(
+            "configuration",
+            self._initialize_configuration,
+        )
+
+        self.runtime.register_component(
+            "logging",
+            self._initialize_logging,
+            dependencies=["configuration"],
+        )
+
+        self.runtime.register_component(
+            "security",
+            self._initialize_security,
+            self._shutdown_security,
+            dependencies=["configuration"],
+        )
+
+        self.runtime.register_component(
+            "resources",
+            self._initialize_resources,
+            self._shutdown_resources,
+            dependencies=["configuration"],
+        )
+
+        self.runtime.register_component(
+            "organization",
+            self._initialize_organization,
+            self._shutdown_organization,
+            dependencies=["resources"],
+        )
+
+        self.runtime.register_component(
+            "events",
+            self._initialize_events,
+            self._shutdown_events,
+            dependencies=["configuration"],
+        )
+
+        self.runtime.register_component(
+            "communication",
+            self._initialize_communication,
+            self._shutdown_communication,
+            dependencies=["events", "security"],
+        )
+
+        self.runtime.register_component(
+            "routing",
+            self._initialize_routing,
+            self._shutdown_routing,
+            dependencies=["communication"],
+        )
+
+        self.runtime.register_component(
+            "health",
+            self._initialize_health,
+            self._shutdown_health,
+            dependencies=["events"],
+        )
+
+        self.runtime.register_component(
+            "dependencies",
+            self._initialize_dependencies,
+            self._shutdown_dependencies,
+        )
+
+        self.runtime.register_component(
+            "services",
+            self._initialize_services,
+            self._shutdown_services,
+            dependencies=["dependencies", "health"],
+        )
+
         self.runtime.register_component(
             "core",
             self._initialize,
             self._shutdown,
+            dependencies=[
+                "configuration",
+                "logging",
+                "security",
+                "resources",
+                "organization",
+                "events",
+                "communication",
+                "routing",
+                "health",
+                "dependencies",
+                "services",
+            ],
         )
 
     def _register_dependencies(self) -> None:
@@ -117,8 +211,43 @@ class CoreApplication:
         for service in internal_services:
             self.services.register(service)
 
-    def _initialize(self) -> None:
+    def _initialize_configuration(self) -> None:
+        """Initialize configuration infrastructure."""
+
+    def _initialize_logging(self) -> None:
+        """Initialize logging infrastructure."""
+
+    def _initialize_security(self) -> None:
+        """Initialize security infrastructure."""
+
+    def _initialize_resources(self) -> None:
+        """Initialize resource infrastructure."""
+
+    def _initialize_organization(self) -> None:
+        """Initialize organization infrastructure."""
+
+    def _initialize_events(self) -> None:
+        """Initialize the event subsystem."""
+
+    def _initialize_communication(self) -> None:
+        """Initialize the communication subsystem."""
+
+    def _initialize_routing(self) -> None:
+        """Initialize the routing subsystem."""
+
+    def _initialize_health(self) -> None:
+        """Initialize health monitoring."""
+
         self._register_health_checks()
+
+    def _initialize_dependencies(self) -> None:
+        """Initialize dependency management."""
+
+    def _initialize_services(self) -> None:
+        """Initialize service management."""
+
+    def _initialize(self) -> None:
+        """Initialize the complete C.O.R.E. application."""
 
         self.logger.info("C.O.R.E. initialized.")
 
@@ -185,22 +314,47 @@ class CoreApplication:
             message="Service manager is available.",
         )
 
-    def _shutdown(self) -> None:
-        if self.events:
-            self.events.emit(
-                event_type="SYSTEM_STOPPING",
-                source="core",
-                payload={"state": "stopping"},
-            )
+    def _shutdown_configuration(self) -> None:
+        """Shutdown configuration infrastructure."""
 
-        self.services.clear()
-        self.routing.clear()
-        self.health.clear()
-        self.events.clear()
-        self.resources.clear()
-        self.organization.clear()
-        self.dependencies.clear()
+    def _shutdown_logging(self) -> None:
+        """Shutdown logging infrastructure."""
+
+    def _shutdown_security(self) -> None:
         self.security.clear()
+
+    def _shutdown_resources(self) -> None:
+        self.resources.clear()
+
+    def _shutdown_organization(self) -> None:
+        self.organization.clear()
+
+    def _shutdown_events(self) -> None:
+        self.events.clear()
+
+    def _shutdown_communication(self) -> None:
+        pass
+
+    def _shutdown_routing(self) -> None:
+        self.routing.clear()
+
+    def _shutdown_health(self) -> None:
+        self.health.clear()
+
+    def _shutdown_dependencies(self) -> None:
+        self.dependencies.clear()
+
+    def _shutdown_services(self) -> None:
+        self.services.clear()
+
+    def _shutdown(self) -> None:
+        """
+        Final application shutdown.
+
+        Component-specific cleanup is handled by the runtime in reverse
+        dependency order. This method only performs final application-level
+        logging.
+        """
 
         self.logger.info("C.O.R.E. shutdown complete.")
 
