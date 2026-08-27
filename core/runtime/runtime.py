@@ -11,14 +11,17 @@ class Runtime:
     """
     Controls the lifecycle of C.O.R.E.
 
-    Runtime coordinates component startup, shutdown, failure handling,
-    and the active runtime state.
+    Runtime coordinates component startup, dependency-aware ordering,
+    shutdown, failure handling, and active runtime state.
     """
 
     def __init__(self) -> None:
         self._state = RuntimeState.STOPPED
-        self._components: list[tuple[str, Callable[[], None]]] = []
-        self._shutdown_handlers: list[tuple[str, Callable[[], None]]] = []
+
+        self._components: dict[str, Callable[[], None]] = {}
+        self._shutdown_handlers: dict[str, Callable[[], None]] = {}
+        self._component_dependencies: dict[str, set[str]] = {}
+
         self._initialized_components: list[str] = []
         self._error: Exception | None = None
 
@@ -39,21 +42,94 @@ class Runtime:
         name: str,
         initializer: Callable[[], None],
         shutdown: Callable[[], None] | None = None,
+        dependencies: list[str] | None = None,
     ) -> None:
-        """Register a component in the runtime lifecycle."""
+        """
+        Register a component in the runtime lifecycle.
+
+        Dependencies must be registered components and will be initialized
+        before the component that depends on them.
+        """
 
         if self._state != RuntimeState.STOPPED:
             raise RuntimeError(
                 "Components cannot be registered while runtime is active."
             )
 
-        if any(component_name == name for component_name, _ in self._components):
+        if name in self._components:
             raise RuntimeError(f"Component already registered: {name}")
 
-        self._components.append((name, initializer))
+        self._components[name] = initializer
+        self._component_dependencies[name] = set(dependencies or [])
 
         if shutdown is not None:
-            self._shutdown_handlers.append((name, shutdown))
+            self._shutdown_handlers[name] = shutdown
+
+    def set_dependencies(
+        self,
+        name: str,
+        dependencies: list[str],
+    ) -> None:
+        """Set the dependencies for an already-registered component."""
+
+        if self._state != RuntimeState.STOPPED:
+            raise RuntimeError(
+                "Dependencies cannot be changed while runtime is active."
+            )
+
+        if name not in self._components:
+            raise RuntimeError(f"Component not registered: {name}")
+
+        self._component_dependencies[name] = set(dependencies)
+
+    def get_dependencies(self, name: str) -> list[str]:
+        """Return the registered dependencies for a component."""
+
+        if name not in self._components:
+            raise RuntimeError(f"Component not registered: {name}")
+
+        return sorted(self._component_dependencies[name])
+
+    def get_start_order(self) -> list[str]:
+        """
+        Resolve the complete dependency-aware startup order.
+
+        Dependencies always appear before the components that require them.
+        """
+
+        order: list[str] = []
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(name: str) -> None:
+            if name in visiting:
+                raise RuntimeError(
+                    f"Circular dependency detected involving: {name}"
+                )
+
+            if name in visited:
+                return
+
+            if name not in self._components:
+                raise RuntimeError(
+                    f"Missing dependency: {name}"
+                )
+
+            visiting.add(name)
+
+            for dependency in sorted(
+                self._component_dependencies.get(name, set())
+            ):
+                visit(dependency)
+
+            visiting.remove(name)
+            visited.add(name)
+            order.append(name)
+
+        for name in self._components:
+            visit(name)
+
+        return order
 
     def start(self) -> None:
         """Initialize all registered components and enter RUNNING state."""
@@ -76,7 +152,11 @@ class Runtime:
         try:
             self._state = RuntimeState.INITIALIZING
 
-            for name, initializer in self._components:
+            start_order = self.get_start_order()
+
+            for name in start_order:
+                initializer = self._components[name]
+
                 initializer()
                 self._initialized_components.append(name)
 
@@ -85,6 +165,7 @@ class Runtime:
         except Exception as exc:
             self._error = exc
             self._state = RuntimeState.FAILED
+
             self._shutdown_initialized_components()
 
             raise RuntimeError(
@@ -117,12 +198,12 @@ class Runtime:
         self.start()
 
     def _shutdown_initialized_components(self) -> None:
-        """Shut down only components that successfully initialized."""
+        """Shut down initialized components in reverse startup order."""
 
-        initialized = set(self._initialized_components)
+        for name in reversed(self._initialized_components):
+            shutdown = self._shutdown_handlers.get(name)
 
-        for name, shutdown in reversed(self._shutdown_handlers):
-            if name not in initialized:
+            if shutdown is None:
                 continue
 
             try:
@@ -131,9 +212,13 @@ class Runtime:
                 continue
 
     def component_count(self) -> int:
+        """Return the number of registered components."""
+
         return len(self._components)
 
     def initialized_component_count(self) -> int:
+        """Return the number of currently initialized components."""
+
         return len(self._initialized_components)
 
     def clear_components(self) -> None:
@@ -146,4 +231,5 @@ class Runtime:
 
         self._components.clear()
         self._shutdown_handlers.clear()
+        self._component_dependencies.clear()
         self._initialized_components.clear()
