@@ -1,5 +1,7 @@
 import argparse
+import time
 
+from core.application import CoreApplication
 from core.runtime import Runtime
 
 
@@ -53,6 +55,12 @@ def execute(
     args: argparse.Namespace,
     runtime: Runtime,
 ) -> int:
+    """
+    Execute a single CLI command.
+
+    This function intentionally does not block. Long-running process
+    behavior belongs to main().
+    """
 
     if args.command == "start":
         runtime.start()
@@ -91,13 +99,47 @@ def execute(
     return 0
 
 
+def run_application(app: CoreApplication) -> int:
+    """
+    Start the real C.O.R.E. application and keep the process alive.
+    """
+
+    try:
+        app.start()
+
+        print("C.O.R.E. v0.1")
+        print("────────────────────────")
+        print(f"Runtime: {app.state.value.upper()}")
+        print()
+        print("C.O.R.E. is running.")
+        print("Press Ctrl+C to shut down.")
+
+        while app.is_running:
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print()
+        print("C.O.R.E. shutting down...")
+
+    finally:
+        app.stop()
+
+    print("C.O.R.E. stopped.")
+
+    return 0
+
+
 def main() -> int:
     parser = create_parser()
     args = parser.parse_args()
 
-    runtime = Runtime()
+    if args.command == "start":
+        app = CoreApplication()
+        return run_application(app)
 
-    return execute(args, runtime)
+    app = CoreApplication()
+
+    return execute(args, app)
 
 
 if __name__ == "__main__":
