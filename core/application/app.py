@@ -29,7 +29,6 @@ class CoreApplication:
         self.dependencies = DependencyManager()
         self.security = SecurityManager()
         self.services = ServiceManager()
-
         self.routing = Router(self.communication)
 
         self._initialized = False
@@ -58,8 +57,8 @@ class CoreApplication:
             "communication": ["events", "security"],
             "routing": ["communication"],
             "health": ["events"],
-            "services": ["dependencies", "health"],
             "dependencies": [],
+            "services": ["dependencies", "health"],
         }
 
         for component_id, component_dependencies in dependencies.items():
@@ -76,8 +75,6 @@ class CoreApplication:
         self.dependencies.validate()
 
     def _register_internal_services(self) -> None:
-        """Register C.O.R.E.'s internal subsystem services."""
-
         internal_services = [
             Service(
                 service_id="communication",
@@ -121,8 +118,6 @@ class CoreApplication:
             self.services.register(service)
 
     def _initialize(self) -> None:
-        """Initialize C.O.R.E. subsystems."""
-
         self._register_health_checks()
 
         self.logger.info("C.O.R.E. initialized.")
@@ -191,8 +186,6 @@ class CoreApplication:
         )
 
     def _shutdown(self) -> None:
-        """Cleanly shut down C.O.R.E."""
-
         if self.events:
             self.events.emit(
                 event_type="SYSTEM_STOPPING",
@@ -212,8 +205,6 @@ class CoreApplication:
         self.logger.info("C.O.R.E. shutdown complete.")
 
     def start(self) -> None:
-        """Start C.O.R.E."""
-
         if not self._initialized:
             raise RuntimeError(
                 "C.O.R.E. application is not initialized."
@@ -222,21 +213,17 @@ class CoreApplication:
         self.runtime.start()
 
     def stop(self) -> None:
-        """Stop C.O.R.E."""
-
         self.runtime.stop()
 
     def restart(self) -> None:
-        """Restart C.O.R.E."""
-
         self.stop()
+
         self._register_dependencies()
         self._register_internal_services()
+
         self.runtime.start()
 
     def health_check(self):
-        """Run all registered health checks."""
-
         return self.health.check_all()
 
     @property
@@ -245,4 +232,4 @@ class CoreApplication:
 
     @property
     def is_running(self) -> bool:
-        return self.runtime.state.value == "running"
+        return self.runtime.is_running
