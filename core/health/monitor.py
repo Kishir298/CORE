@@ -19,7 +19,6 @@ class HealthMonitor:
         check: HealthCheck,
     ) -> None:
         self._checks[component_id] = check
-
         self._results[component_id] = HealthResult(
             component_id=component_id,
             status=HealthStatus.UNKNOWN,
