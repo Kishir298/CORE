@@ -82,6 +82,204 @@ def test_shutdown_runs_in_reverse_order():
     ]
 
 
+def test_dependency_aware_startup_order():
+    runtime = Runtime()
+    events = []
+
+    runtime.register_component(
+        "database",
+        lambda: events.append("database"),
+    )
+
+    runtime.register_component(
+        "service",
+        lambda: events.append("service"),
+        dependencies=["database"],
+    )
+
+    runtime.register_component(
+        "application",
+        lambda: events.append("application"),
+        dependencies=["service"],
+    )
+
+    runtime.start()
+
+    assert events == [
+        "database",
+        "service",
+        "application",
+    ]
+
+
+def test_dependency_aware_startup_ignores_registration_order():
+    runtime = Runtime()
+    events = []
+
+    runtime.register_component(
+        "application",
+        lambda: events.append("application"),
+        dependencies=["service"],
+    )
+
+    runtime.register_component(
+        "service",
+        lambda: events.append("service"),
+        dependencies=["database"],
+    )
+
+    runtime.register_component(
+        "database",
+        lambda: events.append("database"),
+    )
+
+    runtime.start()
+
+    assert events == [
+        "database",
+        "service",
+        "application",
+    ]
+
+
+def test_dependency_aware_shutdown_order():
+    runtime = Runtime()
+    events = []
+
+    runtime.register_component(
+        "database",
+        lambda: events.append("database-start"),
+        lambda: events.append("database-stop"),
+    )
+
+    runtime.register_component(
+        "service",
+        lambda: events.append("service-start"),
+        lambda: events.append("service-stop"),
+        dependencies=["database"],
+    )
+
+    runtime.register_component(
+        "application",
+        lambda: events.append("application-start"),
+        lambda: events.append("application-stop"),
+        dependencies=["service"],
+    )
+
+    runtime.start()
+    runtime.stop()
+
+    assert events == [
+        "database-start",
+        "service-start",
+        "application-start",
+        "application-stop",
+        "service-stop",
+        "database-stop",
+    ]
+
+
+def test_get_start_order():
+    runtime = Runtime()
+
+    runtime.register_component(
+        "database",
+        lambda: None,
+    )
+
+    runtime.register_component(
+        "service",
+        lambda: None,
+        dependencies=["database"],
+    )
+
+    runtime.register_component(
+        "application",
+        lambda: None,
+        dependencies=["service"],
+    )
+
+    assert runtime.get_start_order() == [
+        "database",
+        "service",
+        "application",
+    ]
+
+
+def test_missing_dependency_fails_startup():
+    runtime = Runtime()
+
+    runtime.register_component(
+        "service",
+        lambda: None,
+        dependencies=["missing"],
+    )
+
+    with pytest.raises(RuntimeError, match="Missing dependency"):
+        runtime.start()
+
+    assert runtime.state == RuntimeState.FAILED
+
+
+def test_circular_dependency_fails_startup():
+    runtime = Runtime()
+
+    runtime.register_component(
+        "first",
+        lambda: None,
+        dependencies=["second"],
+    )
+
+    runtime.register_component(
+        "second",
+        lambda: None,
+        dependencies=["first"],
+    )
+
+    with pytest.raises(RuntimeError, match="Circular dependency"):
+        runtime.start()
+
+    assert runtime.state == RuntimeState.FAILED
+
+
+def test_set_dependencies():
+    runtime = Runtime()
+
+    runtime.register_component(
+        "database",
+        lambda: None,
+    )
+
+    runtime.register_component(
+        "service",
+        lambda: None,
+    )
+
+    runtime.set_dependencies(
+        "service",
+        ["database"],
+    )
+
+    assert runtime.get_dependencies("service") == ["database"]
+
+
+def test_unknown_component_dependency_update_fails():
+    runtime = Runtime()
+
+    with pytest.raises(RuntimeError, match="Component not registered"):
+        runtime.set_dependencies(
+            "missing",
+            ["database"],
+        )
+
+
+def test_unknown_component_dependency_lookup_fails():
+    runtime = Runtime()
+
+    with pytest.raises(RuntimeError, match="Component not registered"):
+        runtime.get_dependencies("missing")
+
+
 def test_start_is_idempotent():
     runtime = Runtime()
     count = 0

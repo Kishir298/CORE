@@ -168,6 +168,9 @@ class Runtime:
 
             self._shutdown_initialized_components()
 
+            if isinstance(exc, RuntimeError):
+                raise
+
             raise RuntimeError(
                 "C.O.R.E. runtime failed during initialization."
             ) from exc
