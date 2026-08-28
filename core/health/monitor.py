@@ -1,4 +1,6 @@
 from collections.abc import Callable
+from datetime import datetime, timezone
+from threading import RLock
 
 from core.health.models import HealthResult, HealthStatus
 
@@ -7,30 +9,90 @@ HealthCheck = Callable[[], HealthResult]
 
 
 class HealthMonitor:
-    """Tracks the health of C.O.R.E. components."""
+    """
+    Tracks the health of C.O.R.E. components.
+
+    HealthMonitor stores registered health checks and their latest results.
+    Checks are executed synchronously and failures are converted into
+    UNHEALTHY results so one broken component does not crash the monitor.
+    """
 
     def __init__(self) -> None:
         self._checks: dict[str, HealthCheck] = {}
         self._results: dict[str, HealthResult] = {}
+        self._last_checked: dict[str, datetime] = {}
+        self._check_counts: dict[str, int] = {}
+        self._failure_counts: dict[str, int] = {}
+
+        self._lock = RLock()
+        self._active = True
+
+    def start(self) -> None:
+        """Start health monitoring."""
+
+        with self._lock:
+            self._active = True
+
+    def stop(self) -> None:
+        """Stop health monitoring."""
+
+        with self._lock:
+            self._active = False
+
+    @property
+    def is_running(self) -> bool:
+        """Return whether health monitoring is active."""
+
+        with self._lock:
+            return self._active
 
     def register(
         self,
         component_id: str,
         check: HealthCheck,
     ) -> None:
-        self._checks[component_id] = check
-        self._results[component_id] = HealthResult(
-            component_id=component_id,
-            status=HealthStatus.UNKNOWN,
-            message="Health check has not run yet.",
-        )
+        """Register or replace a health check for a component."""
+
+        if not component_id:
+            raise ValueError("Component ID cannot be empty.")
+
+        if not callable(check):
+            raise TypeError("Health check must be callable.")
+
+        with self._lock:
+            self._checks[component_id] = check
+            self._results[component_id] = HealthResult(
+                component_id=component_id,
+                status=HealthStatus.UNKNOWN,
+                message="Health check has not run yet.",
+            )
+            self._last_checked.pop(component_id, None)
+            self._check_counts[component_id] = 0
+            self._failure_counts[component_id] = 0
 
     def unregister(self, component_id: str) -> None:
-        self._checks.pop(component_id, None)
-        self._results.pop(component_id, None)
+        """Remove a component's health check and stored state."""
+
+        with self._lock:
+            self._checks.pop(component_id, None)
+            self._results.pop(component_id, None)
+            self._last_checked.pop(component_id, None)
+            self._check_counts.pop(component_id, None)
+            self._failure_counts.pop(component_id, None)
 
     def check(self, component_id: str) -> HealthResult:
-        check = self._checks.get(component_id)
+        """
+        Execute the health check for a component.
+
+        Missing checks return UNKNOWN. Exceptions and invalid return values
+        become UNHEALTHY results.
+        """
+
+        with self._lock:
+            if not self._active:
+                raise RuntimeError("Health monitor is not running.")
+
+            check = self._checks.get(component_id)
 
         if check is None:
             return HealthResult(
@@ -39,10 +101,18 @@ class HealthMonitor:
                 message="No health check registered.",
             )
 
+        checked_at = datetime.now(timezone.utc)
+
+        with self._lock:
+            self._check_counts[component_id] += 1
+
         try:
             result = check()
 
             if not isinstance(result, HealthResult):
+                with self._lock:
+                    self._failure_counts[component_id] += 1
+
                 result = HealthResult(
                     component_id=component_id,
                     status=HealthStatus.UNHEALTHY,
@@ -50,42 +120,69 @@ class HealthMonitor:
                 )
 
         except Exception as exc:
+            with self._lock:
+                self._failure_counts[component_id] += 1
+
             result = HealthResult(
                 component_id=component_id,
                 status=HealthStatus.UNHEALTHY,
                 message=f"Health check failed: {exc}",
             )
 
-        self._results[component_id] = result
+        with self._lock:
+            self._results[component_id] = result
+            self._last_checked[component_id] = checked_at
+
         return result
 
     def check_all(self) -> list[HealthResult]:
+        """Execute every registered health check."""
+
+        with self._lock:
+            if not self._active:
+                raise RuntimeError("Health monitor is not running.")
+
+            component_ids = list(self._checks)
+
         return [
             self.check(component_id)
-            for component_id in self._checks
+            for component_id in component_ids
         ]
 
     def get(self, component_id: str) -> HealthResult:
-        return self._results.get(
-            component_id,
-            HealthResult(
-                component_id=component_id,
-                status=HealthStatus.UNKNOWN,
-                message="Component not registered.",
-            ),
-        )
+        """Return the latest stored health result for a component."""
+
+        with self._lock:
+            return self._results.get(
+                component_id,
+                HealthResult(
+                    component_id=component_id,
+                    status=HealthStatus.UNKNOWN,
+                    message="Component not registered.",
+                ),
+            )
 
     def status(self, component_id: str) -> HealthStatus:
+        """Return the latest health status for a component."""
+
         return self.get(component_id).status
 
     def overall_status(self) -> HealthStatus:
-        if not self._results:
-            return HealthStatus.UNKNOWN
+        """
+        Calculate the overall health of all registered components.
 
-        statuses = [
-            result.status
-            for result in self._results.values()
-        ]
+        Priority:
+        UNHEALTHY > DEGRADED > UNKNOWN > HEALTHY
+        """
+
+        with self._lock:
+            if not self._results:
+                return HealthStatus.UNKNOWN
+
+            statuses = [
+                result.status
+                for result in self._results.values()
+            ]
 
         if any(status == HealthStatus.UNHEALTHY for status in statuses):
             return HealthStatus.UNHEALTHY
@@ -93,14 +190,41 @@ class HealthMonitor:
         if any(status == HealthStatus.DEGRADED for status in statuses):
             return HealthStatus.DEGRADED
 
-        if all(status == HealthStatus.HEALTHY for status in statuses):
-            return HealthStatus.HEALTHY
+        if any(status == HealthStatus.UNKNOWN for status in statuses):
+            return HealthStatus.UNKNOWN
 
-        return HealthStatus.UNKNOWN
+        return HealthStatus.HEALTHY
+
+    def last_checked(self, component_id: str) -> datetime | None:
+        """Return the timestamp of the latest health check."""
+
+        with self._lock:
+            return self._last_checked.get(component_id)
+
+    def check_count(self, component_id: str) -> int:
+        """Return how many times a component's health check has run."""
+
+        with self._lock:
+            return self._check_counts.get(component_id, 0)
+
+    def failure_count(self, component_id: str) -> int:
+        """Return how many times a component's health check has failed."""
+
+        with self._lock:
+            return self._failure_counts.get(component_id, 0)
 
     def count(self) -> int:
-        return len(self._checks)
+        """Return the number of registered health checks."""
+
+        with self._lock:
+            return len(self._checks)
 
     def clear(self) -> None:
-        self._checks.clear()
-        self._results.clear()
+        """Remove all health checks and stored health state."""
+
+        with self._lock:
+            self._checks.clear()
+            self._results.clear()
+            self._last_checked.clear()
+            self._check_counts.clear()
+            self._failure_counts.clear()
