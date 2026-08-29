@@ -17,7 +17,10 @@ class HealthMonitor:
     UNHEALTHY results so one broken component does not crash the monitor.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        on_change: Callable[[HealthResult], None] | None = None,
+    ) -> None:
         self._checks: dict[str, HealthCheck] = {}
         self._results: dict[str, HealthResult] = {}
         self._last_checked: dict[str, datetime] = {}
@@ -26,6 +29,7 @@ class HealthMonitor:
 
         self._lock = RLock()
         self._active = True
+        self._on_change = on_change
 
     def start(self) -> None:
         """Start health monitoring."""
@@ -85,7 +89,8 @@ class HealthMonitor:
         Execute the health check for a component.
 
         Missing checks return UNKNOWN. Exceptions and invalid return values
-        become UNHEALTHY results.
+        become UNHEALTHY results. A notification fires whenever the resulting
+        status differs from the previously stored status.
         """
 
         with self._lock:
@@ -129,9 +134,21 @@ class HealthMonitor:
                 message=f"Health check failed: {exc}",
             )
 
+        previous_status = None
+
         with self._lock:
+            previous = self._results.get(component_id)
+            if previous is not None:
+                previous_status = previous.status
+
             self._results[component_id] = result
             self._last_checked[component_id] = checked_at
+
+        if self._on_change is not None and previous_status != result.status:
+            try:
+                self._on_change(result)
+            except Exception:
+                pass
 
         return result
 

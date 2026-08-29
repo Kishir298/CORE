@@ -6,6 +6,7 @@ from core.dependencies import DependencyManager
 from core.events import (
     COMPONENT_STARTED,
     EventBus,
+    HEALTH_CHANGED,
     MESSAGE_SENT,
     RESOURCE_REGISTERED,
     RESOURCE_REMOVED,
@@ -60,7 +61,7 @@ class CoreApplication:
         self.resources = ResourceRegistry()
         self.organization = OrganizationEngine(registry=self.resources)
         self.resources.attach_organization(self.organization)
-        self.health = HealthMonitor()
+        self.health = HealthMonitor(on_change=self._emit_health_changed)
         self.dependencies = DependencyManager()
         self.security = SecurityManager()
         self.services = ServiceManager()
@@ -618,12 +619,6 @@ class CoreApplication:
                 payload={"component": component},
             )
 
-        self.events.emit(
-            event_type=SYSTEM_STARTED,
-            source="core",
-            payload={"state": "running"},
-        )
-
     def _emit_message_sent(self, message) -> None:
         """Publish a communication event for a delivered message."""
 
@@ -653,6 +648,18 @@ class CoreApplication:
             event_type=event_type,
             source="resources",
             payload={"resource_id": resource.resource_id},
+        )
+
+    def _emit_health_changed(self, result) -> None:
+        """Publish a health change event for a component status transition."""
+
+        self.events.emit(
+            event_type=HEALTH_CHANGED,
+            source="health",
+            payload={
+                "component_id": result.component_id,
+                "status": result.status.value,
+            },
         )
 
     def _bridge_security_event(self, event: dict) -> None:
@@ -783,14 +790,14 @@ class CoreApplication:
         return HealthResult(
             component_id="resources",
             status=HealthStatus.HEALTHY,
-            message="Resource registry is available.",
+            message=f"{self.resources.count()} resources registered.",
         )
 
     def _check_organization(self) -> HealthResult:
         return HealthResult(
             component_id="organization",
             status=HealthStatus.HEALTHY,
-            message="Organization engine is available.",
+            message=f"{self.organization.count()} organization entries.",
         )
 
     def _check_events(self) -> HealthResult:
@@ -811,37 +818,34 @@ class CoreApplication:
         )
 
     def _check_communication(self) -> HealthResult:
-        healthy = self.communication.is_running
+        if not self.communication.is_running:
+            return HealthResult(
+                component_id="communication",
+                status=HealthStatus.UNHEALTHY,
+                message="Communication subsystem is not running.",
+            )
 
         return HealthResult(
             component_id="communication",
-            status=(
-                HealthStatus.HEALTHY
-                if healthy
-                else HealthStatus.UNHEALTHY
-            ),
+            status=HealthStatus.HEALTHY,
             message=(
-                "Communication subsystem is running."
-                if healthy
-                else "Communication subsystem is not running."
+                f"Communication online; "
+                f"{self.communication.count()} channels."
             ),
         )
 
     def _check_routing(self) -> HealthResult:
-        healthy = self.routing.is_running
+        if not self.routing.is_running:
+            return HealthResult(
+                component_id="routing",
+                status=HealthStatus.UNHEALTHY,
+                message="Router is not running.",
+            )
 
         return HealthResult(
             component_id="routing",
-            status=(
-                HealthStatus.HEALTHY
-                if healthy
-                else HealthStatus.UNHEALTHY
-            ),
-            message=(
-                "Router is running."
-                if healthy
-                else "Router is not running."
-            ),
+            status=HealthStatus.HEALTHY,
+            message=f"Router online; {self.routing.count()} routes.",
         )
 
     def _check_health(self) -> HealthResult:
@@ -940,6 +944,12 @@ class CoreApplication:
             )
 
         self.runtime.start()
+
+        self.events.emit(
+            event_type=SYSTEM_STARTED,
+            source="core",
+            payload={"state": "running"},
+        )
 
     def stop(self) -> None:
         self.runtime.stop()
