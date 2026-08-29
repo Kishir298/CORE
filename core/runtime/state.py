@@ -8,3 +8,12 @@ class RuntimeState(str, Enum):
     SHUTTING_DOWN = "shutting_down"
     STOPPED = "stopped"
     FAILED = "failed"
+
+
+class ComponentState(str, Enum):
+    REGISTERED = "registered"
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+    FAILED = "failed"

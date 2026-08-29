@@ -1,6 +1,6 @@
 from collections.abc import Callable
 
-from core.runtime.state import RuntimeState
+from core.runtime.state import ComponentState, RuntimeState
 
 
 class RuntimeError(Exception):
@@ -12,7 +12,9 @@ class Runtime:
     Controls the lifecycle of C.O.R.E.
 
     Runtime coordinates component startup, dependency-aware ordering,
-    shutdown, failure handling, and active runtime state.
+    shutdown, failure handling, and active runtime state. Each registered
+    component is tracked through its own lifecycle state so component and
+    application orchestration stay aligned.
     """
 
     def __init__(self) -> None:
@@ -21,9 +23,11 @@ class Runtime:
         self._components: dict[str, Callable[[], None]] = {}
         self._shutdown_handlers: dict[str, Callable[[], None]] = {}
         self._component_dependencies: dict[str, set[str]] = {}
+        self._component_state: dict[str, ComponentState] = {}
 
         self._initialized_components: list[str] = []
         self._error: Exception | None = None
+        self._shutdown_errors: list[tuple[str, Exception]] = []
 
     @property
     def state(self) -> RuntimeState:
@@ -32,6 +36,10 @@ class Runtime:
     @property
     def error(self) -> Exception | None:
         return self._error
+
+    @property
+    def shutdown_errors(self) -> list[tuple[str, Exception]]:
+        return list(self._shutdown_errors)
 
     @property
     def is_running(self) -> bool:
@@ -61,6 +69,7 @@ class Runtime:
 
         self._components[name] = initializer
         self._component_dependencies[name] = set(dependencies or [])
+        self._component_state[name] = ComponentState.REGISTERED
 
         if shutdown is not None:
             self._shutdown_handlers[name] = shutdown
@@ -89,6 +98,17 @@ class Runtime:
             raise RuntimeError(f"Component not registered: {name}")
 
         return sorted(self._component_dependencies[name])
+
+    def component_state(self, name: str) -> ComponentState:
+        """Return the lifecycle state of a registered component."""
+
+        if name not in self._components:
+            raise RuntimeError(f"Component not registered: {name}")
+
+        return self._component_state.get(
+            name,
+            ComponentState.REGISTERED,
+        )
 
     def get_start_order(self) -> list[str]:
         """
@@ -146,8 +166,11 @@ class Runtime:
             )
 
         self._error = None
+        self._shutdown_errors.clear()
         self._initialized_components.clear()
         self._state = RuntimeState.STARTING
+
+        current: str | None = None
 
         try:
             self._state = RuntimeState.INITIALIZING
@@ -155,10 +178,15 @@ class Runtime:
             start_order = self.get_start_order()
 
             for name in start_order:
+                current = name
+
+                self._component_state[name] = ComponentState.STARTING
+
                 initializer = self._components[name]
 
                 initializer()
                 self._initialized_components.append(name)
+                self._component_state[name] = ComponentState.RUNNING
 
             self._state = RuntimeState.RUNNING
 
@@ -166,13 +194,18 @@ class Runtime:
             self._error = exc
             self._state = RuntimeState.FAILED
 
+            if current is not None:
+                self._component_state[current] = ComponentState.FAILED
+
             self._shutdown_initialized_components()
+            self._initialized_components.clear()
 
             if isinstance(exc, RuntimeError):
                 raise
 
             raise RuntimeError(
-                "C.O.R.E. runtime failed during initialization."
+                "C.O.R.E. runtime failed during initialization "
+                f"of component '{current or 'unknown'}': {exc}"
             ) from exc
 
     def stop(self) -> None:
@@ -207,12 +240,24 @@ class Runtime:
             shutdown = self._shutdown_handlers.get(name)
 
             if shutdown is None:
+                self._component_state[name] = ComponentState.STOPPED
                 continue
+
+            self._component_state[name] = ComponentState.STOPPING
 
             try:
                 shutdown()
-            except Exception:
+            except Exception as exc:
+                self._shutdown_errors.append((name, exc))
+                self._component_state[name] = ComponentState.FAILED
                 continue
+
+            self._component_state[name] = ComponentState.STOPPED
+
+    def initialized_components(self) -> list[str]:
+        """Return the currently initialized components in start order."""
+
+        return list(self._initialized_components)
 
     def component_count(self) -> int:
         """Return the number of registered components."""
@@ -235,4 +280,6 @@ class Runtime:
         self._components.clear()
         self._shutdown_handlers.clear()
         self._component_dependencies.clear()
+        self._component_state.clear()
         self._initialized_components.clear()
+        self._shutdown_errors.clear()

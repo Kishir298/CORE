@@ -1,6 +1,11 @@
 import pytest
 
-from core.runtime import Runtime, RuntimeError, RuntimeState
+from core.runtime import (
+    ComponentState,
+    Runtime,
+    RuntimeError,
+    RuntimeState,
+)
 
 
 def test_runtime_starts_and_stops():
@@ -472,3 +477,293 @@ def test_error_is_cleared_on_successful_restart():
 
     assert runtime.state == RuntimeState.RUNNING
     assert runtime.error is None
+
+
+def test_partial_startup_is_cleaned_up_on_failure():
+    runtime = Runtime()
+    events = []
+
+    runtime.register_component(
+        "first",
+        lambda: events.append("first-start"),
+        lambda: events.append("first-stop"),
+    )
+
+    def broken_initializer():
+        raise ValueError("broken component")
+
+    runtime.register_component(
+        "second",
+        broken_initializer,
+        lambda: events.append("second-stop"),
+    )
+
+    runtime.register_component(
+        "third",
+        lambda: events.append("third-start"),
+        lambda: events.append("third-stop"),
+        dependencies=["second"],
+    )
+
+    with pytest.raises(RuntimeError):
+        runtime.start()
+
+    assert runtime.state == RuntimeState.FAILED
+
+    assert events == [
+        "first-start",
+        "first-stop",
+    ]
+
+    assert runtime.initialized_component_count() == 0
+
+
+def test_stop_after_failed_start_does_not_shutdown_twice():
+    runtime = Runtime()
+    shutdown_count = 0
+
+    def shutdown():
+        nonlocal shutdown_count
+        shutdown_count += 1
+
+    runtime.register_component(
+        "first",
+        lambda: None,
+        shutdown,
+    )
+
+    def broken_initializer():
+        raise ValueError("broken component")
+
+    runtime.register_component(
+        "second",
+        broken_initializer,
+    )
+
+    with pytest.raises(RuntimeError):
+        runtime.start()
+
+    runtime.stop()
+
+    assert shutdown_count == 1
+    assert runtime.state == RuntimeState.STOPPED
+
+
+def test_component_state_tracks_lifecycle():
+    runtime = Runtime()
+
+    runtime.register_component(
+        "test",
+        lambda: None,
+        lambda: None,
+    )
+
+    assert runtime.component_state("test") == ComponentState.REGISTERED
+
+    runtime.start()
+
+    assert runtime.component_state("test") == ComponentState.RUNNING
+
+    runtime.stop()
+
+    assert runtime.component_state("test") == ComponentState.STOPPED
+
+
+def test_component_states_after_partial_failure():
+    runtime = Runtime()
+
+    runtime.register_component(
+        "first",
+        lambda: None,
+    )
+
+    def broken_initializer():
+        raise ValueError("broken component")
+
+    runtime.register_component(
+        "second",
+        broken_initializer,
+        dependencies=["first"],
+    )
+
+    with pytest.raises(RuntimeError):
+        runtime.start()
+
+    assert runtime.component_state("first") == ComponentState.STOPPED
+    assert runtime.component_state("second") == ComponentState.FAILED
+
+
+def test_initializer_failure_is_attributed_to_component():
+    runtime = Runtime()
+
+    def broken_initializer():
+        raise ValueError("broken component")
+
+    runtime.register_component(
+        "broken",
+        broken_initializer,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="component 'broken'",
+    ) as excinfo:
+        runtime.start()
+
+    assert isinstance(excinfo.value.__cause__, ValueError)
+
+    assert runtime.error is not None
+    assert runtime.state == RuntimeState.FAILED
+
+
+def test_initialized_components_listing():
+    runtime = Runtime()
+
+    runtime.register_component(
+        "database",
+        lambda: None,
+    )
+
+    runtime.register_component(
+        "service",
+        lambda: None,
+        dependencies=["database"],
+    )
+
+    assert runtime.initialized_components() == []
+
+    runtime.start()
+
+    assert runtime.initialized_components() == [
+        "database",
+        "service",
+    ]
+
+    assert runtime.initialized_component_count() == 2
+
+    runtime.stop()
+
+    assert runtime.initialized_components() == []
+
+
+def test_shutdown_errors_are_recorded():
+    runtime = Runtime()
+
+    def broken_shutdown():
+        raise RuntimeError("shutdown failed")
+
+    runtime.register_component(
+        "broken",
+        lambda: None,
+        broken_shutdown,
+    )
+
+    runtime.register_component(
+        "healthy",
+        lambda: None,
+        lambda: None,
+    )
+
+    runtime.start()
+    runtime.stop()
+
+    assert runtime.state == RuntimeState.STOPPED
+
+    assert len(runtime.shutdown_errors) == 1
+
+    name, error = runtime.shutdown_errors[0]
+
+    assert name == "broken"
+    assert isinstance(error, RuntimeError)
+
+    assert runtime.component_state("broken") == ComponentState.FAILED
+    assert runtime.component_state("healthy") == ComponentState.STOPPED
+
+
+def test_shutdown_errors_are_cleared_on_restart():
+    runtime = Runtime()
+
+    def broken_shutdown():
+        raise RuntimeError("shutdown failed")
+
+    runtime.register_component(
+        "broken",
+        lambda: None,
+        broken_shutdown,
+    )
+
+    runtime.start()
+    runtime.stop()
+
+    assert len(runtime.shutdown_errors) == 1
+
+    runtime.start()
+
+    assert runtime.shutdown_errors == []
+    assert runtime.state == RuntimeState.RUNNING
+
+    runtime.stop()
+
+
+def test_shutdown_error_does_not_block_restart_cleanup():
+    runtime = Runtime()
+
+    def broken_shutdown():
+        raise RuntimeError("shutdown failed")
+
+    runtime.register_component(
+        "broken",
+        lambda: None,
+        broken_shutdown,
+    )
+
+    runtime.start()
+    runtime.stop()
+
+    events = []
+
+    runtime.register_component(
+        "later",
+        lambda: events.append("later-start"),
+        lambda: events.append("later-stop"),
+    )
+
+    runtime.start()
+    runtime.stop()
+
+    assert events == [
+        "later-start",
+        "later-stop",
+    ]
+
+
+def test_component_state_unknown_component_fails():
+    runtime = Runtime()
+
+    with pytest.raises(RuntimeError, match="Component not registered"):
+        runtime.component_state("missing")
+
+
+def test_components_reach_running_state_together():
+    runtime = Runtime()
+
+    states = {}
+
+    def record(name):
+        def initialize():
+            states[name] = runtime.component_state(name)
+
+        return initialize
+
+    runtime.register_component("alpha", record("alpha"))
+    runtime.register_component("beta", record("beta"))
+
+    runtime.start()
+
+    assert states == {
+        "alpha": ComponentState.STARTING,
+        "beta": ComponentState.STARTING,
+    }
+
+    assert runtime.component_state("alpha") == ComponentState.RUNNING
+    assert runtime.component_state("beta") == ComponentState.RUNNING

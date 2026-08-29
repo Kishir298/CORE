@@ -1,13 +1,22 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
 .pytest_cache/
+
+# Test / coverage
+.coverage
+htmlcov/
 
 # Virtual environments
 .venv/
 venv/
 env/
+
+# In-place virtual environment (python -m venv .)
+/Lib/
+/Scripts/
+/Include/
+/pyvenv.cfg
 
 # IDE
 .vscode/
@@ -31,6 +40,12 @@ dist/
 # Logs
 *.log
 
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pyre/
+
 # OS
+.DS_Store
 Thumbs.db
 Desktop.ini
