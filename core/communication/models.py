@@ -21,6 +21,8 @@ class Message:
 
     request_id: str | None = None
 
+    identity_id: str | None = None
+
     def create_response(
         self,
         source: str,

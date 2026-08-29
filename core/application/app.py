@@ -21,7 +21,11 @@ from core.organization import OrganizationEngine
 from core.resources import Resource, ResourceRegistry
 from core.routing import Router
 from core.runtime import Runtime, RuntimeState
-from core.security import SecurityManager
+from core.security import (
+    Permission,
+    SecurityManager,
+    SecurityPolicy,
+)
 from core.services import (
     Service,
     ServiceDispatcher,
@@ -64,10 +68,13 @@ class CoreApplication:
         self.health = HealthMonitor(on_change=self._emit_health_changed)
         self.dependencies = DependencyManager()
         self.security = SecurityManager()
+        self.security_policy = SecurityPolicy()
         self.services = ServiceManager()
         self.routing = Router(self.communication)
         self.dispatcher = ServiceDispatcher(
             self.services,
+            security=self.security,
+            policy=self.security_policy,
             emitter=self._emit_service_event,
         )
 
@@ -77,6 +84,7 @@ class CoreApplication:
         self._register_runtime_components()
         self._register_dependencies()
         self._register_internal_services()
+        self._register_security_policy()
 
         self._initialized = True
 
@@ -264,6 +272,43 @@ class CoreApplication:
         for service in internal_services:
             self.services.register(service)
 
+    def _register_security_policy(self) -> None:
+        """
+        Declare the permission required for each internal service operation.
+
+        Read-only operations require READ; mutations require WRITE.
+        Operations without a registered requirement remain open.
+        """
+
+        read_operations = {
+            "resources": ["list", "get", "discover", "category"],
+            "organization": ["list", "by_category"],
+            "routing": ["routes"],
+            "health": ["status", "overall"],
+            "communication": ["status"],
+            "events": ["status"],
+        }
+
+        write_operations = {
+            "resources": ["register", "update", "remove"],
+        }
+
+        for service_id, operations in read_operations.items():
+            for operation in operations:
+                self.security_policy.grant(
+                    service_id,
+                    operation,
+                    Permission.READ,
+                )
+
+        for service_id, operations in write_operations.items():
+            for operation in operations:
+                self.security_policy.grant(
+                    service_id,
+                    operation,
+                    Permission.WRITE,
+                )
+
     def _load_configuration(self) -> None:
         """
         Load configuration and apply the component policy.
@@ -290,6 +335,23 @@ class CoreApplication:
 
         self._apply_component_policy()
         self._deactivate_disabled_components()
+        self._apply_security_policy()
+
+    def _apply_security_policy(self) -> None:
+        """
+        Activate authorization enforcement based on configuration.
+
+        Enforcement is opt-in: it is active only when explicitly enabled so
+        the internal trusted routing spine is unchanged until a security
+        boundary is configured.
+        """
+
+        enabled = self.configuration.get(
+            "security.enforce_authorization",
+            False,
+        )
+
+        self.security_policy.set_enforced(bool(enabled))
 
     def _apply_component_policy(self) -> None:
         """
@@ -815,6 +877,21 @@ class CoreApplication:
         self.events.subscribe(
             "SERVICE_FAILED",
             self._consume_service_failed,
+        )
+
+        self.events.subscribe(
+            "SECURITY_ACCESS_DENIED",
+            self._consume_security_denied,
+        )
+
+    def _consume_security_denied(self, event) -> None:
+        """Log a rejected security boundary crossing."""
+
+        self.logger.warning(
+            "Security access denied: "
+            f"identity={event.payload.get('identity_id')} "
+            f"service={event.payload.get('service_id')} "
+            f"operation={event.payload.get('operation')}."
         )
 
     def _consume_system_started(self, event) -> None:

@@ -111,6 +111,7 @@ class Router:
             message_id=message.message_id,
             timestamp=message.timestamp,
             request_id=message.request_id,
+            identity_id=message.identity_id,
         )
 
         try:

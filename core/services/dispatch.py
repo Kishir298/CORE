@@ -2,6 +2,7 @@ from collections.abc import Callable
 from typing import Any
 
 from core.communication import Message
+from core.security import SecurityManager, SecurityPolicy
 from core.services.manager import ServiceManager
 from core.services.models import ServiceRequest, ServiceResponse
 
@@ -10,6 +11,8 @@ EventEmitter = Callable[[str, str, dict], None]
 SERVICE_ENDPOINT_PREFIX = "service:"
 
 OPERATION_KEY = "operation"
+
+SECURITY_ACCESS_DENIED_EVENT = "SECURITY_ACCESS_DENIED"
 
 
 class ServiceDispatcher:
@@ -22,6 +25,12 @@ class ServiceDispatcher:
     requested operation through ServiceManager, and converts the result
     back into a response message.
 
+    When a SecurityManager and SecurityPolicy are supplied and the policy is
+    marked as enforced, every request is authenticated and authorized before
+    its operation executes. Denied requests never reach the service
+    implementation. Enforcement is opt-in: until a policy is explicitly marked
+    enforced, the internal trusted flow is unchanged.
+
     This completes the canonical flow:
         Message -> Router -> Destination -> Service -> Operation -> Response
     """
@@ -29,10 +38,28 @@ class ServiceDispatcher:
     def __init__(
         self,
         services: ServiceManager,
+        security: SecurityManager | None = None,
+        policy: SecurityPolicy | None = None,
         emitter: EventEmitter | None = None,
     ) -> None:
         self._services = services
+        self._security = security
+        self._policy = policy
         self._emitter = emitter
+
+    def _enforcement_active(self) -> bool:
+        """
+        Return whether the security boundary is actively enforcing.
+
+        A security manager and policy must be supplied AND the policy must be
+        marked as enforced. This keeps enforcement opt-in so internal trusted
+        flows are unchanged until a boundary is configured.
+        """
+
+        if self._security is None or self._policy is None:
+            return False
+
+        return self._policy.enforced
 
     def endpoint_for(self, service_id: str) -> str:
         """Return the transport endpoint that dispatches to a service."""
@@ -154,8 +181,10 @@ class ServiceDispatcher:
         """
         Transport endpoint handler: process a routed service message.
 
-        Invalid requests are converted into error responses so the routing
-        spine always delivers a structured result back to the caller.
+        Requests are authenticated and authorized when the security boundary is
+        actively enforcing. Invalid requests are converted into error responses
+        so the routing spine always delivers a structured result back to the
+        caller.
         """
 
         if not isinstance(message.payload, dict):
@@ -180,7 +209,81 @@ class ServiceDispatcher:
             )
             return self.to_message(response, source=message.destination)
 
+        if self._enforcement_active():
+            denied = self._enforce(request, message)
+
+            if denied is not None:
+                return denied
+
         response = self.dispatch(request)
+        return self.to_message(response, source=message.destination)
+
+    def _enforce(
+        self,
+        request: ServiceRequest,
+        message: Message,
+    ) -> Message | None:
+        """
+        Authenticate and authorize a request against the security boundary.
+
+        Operations without a registered permission requirement are open.
+        Denied requests return an error response and never execute.
+        """
+
+        required = self._policy.required(
+            request.service_id,
+            request.operation,
+        )
+
+        if required is None:
+            return None
+
+        identity_id = message.identity_id
+
+        if not identity_id:
+            return self._deny(
+                request,
+                message,
+                "Authentication is required for operation "
+                f"'{request.operation}'.",
+            )
+
+        try:
+            self._security.authenticate(identity_id)
+            self._security.authorize(identity_id, required)
+        except Exception as exc:
+            return self._deny(request, message, str(exc))
+
+        return None
+
+    def _deny(
+        self,
+        request: ServiceRequest,
+        message: Message,
+        reason: str,
+    ) -> Message:
+        """Build a denied response and emit a security event."""
+
+        if self._emitter is not None:
+            self._emitter(
+                SECURITY_ACCESS_DENIED_EVENT,
+                f"service:{request.service_id}",
+                {
+                    "service_id": request.service_id,
+                    "operation": request.operation,
+                    "identity_id": message.identity_id,
+                    "reason": reason,
+                },
+            )
+
+        response = ServiceResponse(
+            service_id=request.service_id,
+            operation=request.operation,
+            success=False,
+            request_id=request.request_id,
+            error=reason,
+        )
+
         return self.to_message(response, source=message.destination)
 
 

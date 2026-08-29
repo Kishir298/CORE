@@ -129,3 +129,94 @@ def test_service_request_response_contract():
 
     assert request.request_id == response.request_id
     assert request.service_id == response.service_id
+
+
+def test_open_operation_without_requirement_not_gated_when_enforced():
+    from core.security import (
+        Identity,
+        IdentityType,
+        Permission,
+        SecurityManager,
+        SecurityPolicy,
+    )
+
+    manager = ServiceManager()
+    service = Service(
+        service_id="demo",
+        name="Demo",
+        version="0.1.0",
+    )
+    manager.register(service)
+    manager.start("demo")
+    manager.register_handler("demo", "echo", lambda **kwargs: kwargs)
+
+    policy = SecurityPolicy()
+    policy.grant("demo", "guarded", Permission.READ)
+    policy.set_enforced(True)
+
+    security = SecurityManager()
+    security.register_identity(
+        Identity(
+            identity_id="caller",
+            name="Caller",
+            identity_type=IdentityType.SERVICE,
+            permissions=frozenset({Permission.READ}),
+        )
+    )
+
+    dispatcher = ServiceDispatcher(
+        manager,
+        security=security,
+        policy=policy,
+    )
+
+    response = dispatcher.handle(
+        Message(
+            source="client",
+            destination="service:demo",
+            message_type="DEMO.ECHO",
+            payload={"operation": "echo", "value": 42},
+            identity_id="caller",
+        )
+    )
+
+    assert response.payload["success"] is True
+
+
+def test_unguarded_operation_denied_without_identity_when_required():
+    from core.security import (
+        Permission,
+        SecurityManager,
+        SecurityPolicy,
+    )
+
+    manager = ServiceManager()
+    service = Service(
+        service_id="demo",
+        name="Demo",
+        version="0.1.0",
+    )
+    manager.register(service)
+    manager.start("demo")
+    manager.register_handler("demo", "echo", lambda **kwargs: kwargs)
+
+    policy = SecurityPolicy()
+    policy.grant("demo", "echo", Permission.READ)
+    policy.set_enforced(True)
+
+    dispatcher = ServiceDispatcher(
+        manager,
+        security=SecurityManager(),
+        policy=policy,
+    )
+
+    response = dispatcher.handle(
+        Message(
+            source="client",
+            destination="service:demo",
+            message_type="DEMO.ECHO",
+            payload={"operation": "echo", "value": 42},
+        )
+    )
+
+    assert response.payload["success"] is False
