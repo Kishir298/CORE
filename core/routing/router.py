@@ -1,6 +1,6 @@
 from threading import RLock
 
-from core.communication import LocalCommunication, Message
+from core.communication import Message, Transport
 from core.errors import RoutingError
 
 
@@ -13,7 +13,7 @@ class Router:
     communication layer.
     """
 
-    def __init__(self, communication: LocalCommunication) -> None:
+    def __init__(self, communication: Transport) -> None:
         self._communication = communication
         self._routes: dict[str, str] = {}
         self._lock = RLock()
