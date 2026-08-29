@@ -3,7 +3,17 @@ from pathlib import Path
 from core.communication import LocalCommunication
 from core.configuration import ConfigurationManager
 from core.dependencies import DependencyManager
-from core.events import EventBus
+from core.events import (
+    COMPONENT_STARTED,
+    EventBus,
+    MESSAGE_SENT,
+    RESOURCE_REGISTERED,
+    RESOURCE_REMOVED,
+    SERVICE_EXECUTED,
+    SERVICE_FAILED,
+    SYSTEM_STARTED,
+    SYSTEM_STOPPED,
+)
 from core.health import HealthMonitor, HealthResult, HealthStatus
 from core.logging import CoreLogger
 from core.organization import OrganizationEngine
@@ -17,25 +27,7 @@ from core.services import (
     ServiceManager,
 )
 
-SYSTEM_STARTED = "SYSTEM_STARTED"
-SYSTEM_STOPPED = "SYSTEM_STOPPED"
-
 DEFAULT_CONFIG_PATH = Path("config/core.yaml")
-
-DEFAULT_RUNTIME_COMPONENTS = {
-    "configuration": True,
-    "logging": True,
-    "security": True,
-    "resources": True,
-    "organization": True,
-    "events": True,
-    "communication": True,
-    "routing": True,
-    "health": True,
-    "dependencies": True,
-    "services": True,
-    "core": True,
-}
 
 
 class CoreApplication:
@@ -61,17 +53,22 @@ class CoreApplication:
         self.configuration = ConfigurationManager()
         self.logger = CoreLogger()
 
-        self.communication = LocalCommunication()
+        self.events = EventBus()
+        self.communication = LocalCommunication(
+            on_delivery=self._emit_message_sent
+        )
         self.resources = ResourceRegistry()
         self.organization = OrganizationEngine(registry=self.resources)
         self.resources.attach_organization(self.organization)
-        self.events = EventBus()
         self.health = HealthMonitor()
         self.dependencies = DependencyManager()
         self.security = SecurityManager()
         self.services = ServiceManager()
         self.routing = Router(self.communication)
-        self.dispatcher = ServiceDispatcher(self.services)
+        self.dispatcher = ServiceDispatcher(
+            self.services,
+            emitter=self._emit_service_event,
+        )
 
         self._initialized = False
 
@@ -314,9 +311,13 @@ class CoreApplication:
         self.logger.set_level(resolved)
 
     def _initialize_security(self) -> None:
-        """Activate the security infrastructure."""
+        """Activate the security infrastructure and bridge its events."""
 
         self.security.start()
+
+        self.security.register_event_handler(
+            self._bridge_security_event
+        )
 
     def _initialize_resources(self) -> None:
         """Activate the resource infrastructure."""
@@ -325,9 +326,10 @@ class CoreApplication:
         """Activate the organization infrastructure."""
 
     def _initialize_events(self) -> None:
-        """Activate the event subsystem."""
+        """Activate the event subsystem and attach event consumers."""
 
         self.events.start()
+        self._attach_event_consumers()
 
     def _initialize_communication(self) -> None:
         """Activate the communication subsystem."""
@@ -433,9 +435,7 @@ class CoreApplication:
         self.services.register_handler(
             "resources",
             "remove",
-            lambda resource_id: {
-                "removed": self.resources.unregister(resource_id).resource_id
-            },
+            lambda resource_id: self._remove_resource(resource_id),
         )
 
         self.services.register_handler(
@@ -578,7 +578,18 @@ class CoreApplication:
 
         self.resources.register(resource)
 
+        self._emit_resource_event(RESOURCE_REGISTERED, resource)
+
         return {"resource": self._resource_snapshot(resource)}
+
+    def _remove_resource(self, resource_id: str) -> dict:
+        """Remove a resource and publish a removal event."""
+
+        resource = self.resources.unregister(resource_id)
+
+        self._emit_resource_event(RESOURCE_REMOVED, resource)
+
+        return {"removed": resource.resource_id}
 
     @staticmethod
     def _resource_snapshot(resource: Resource) -> dict:
@@ -600,10 +611,96 @@ class CoreApplication:
 
         self.logger.info("C.O.R.E. initialized.")
 
+        for component in self.runtime.initialized_components():
+            self.events.emit(
+                event_type=COMPONENT_STARTED,
+                source="core",
+                payload={"component": component},
+            )
+
         self.events.emit(
             event_type=SYSTEM_STARTED,
             source="core",
             payload={"state": "running"},
+        )
+
+    def _emit_message_sent(self, message) -> None:
+        """Publish a communication event for a delivered message."""
+
+        self.events.emit(
+            event_type=MESSAGE_SENT,
+            source=message.source,
+            payload={
+                "destination": message.destination,
+                "message_type": message.message_type,
+                "message_id": message.message_id,
+            },
+        )
+
+    def _emit_service_event(self, event_type: str, source: str, payload: dict) -> None:
+        """Publish a service lifecycle/execution event."""
+
+        self.events.emit(
+            event_type=event_type,
+            source=source,
+            payload=payload,
+        )
+
+    def _emit_resource_event(self, event_type: str, resource: Resource) -> None:
+        """Publish a resource lifecycle event."""
+
+        self.events.emit(
+            event_type=event_type,
+            source="resources",
+            payload={"resource_id": resource.resource_id},
+        )
+
+    def _bridge_security_event(self, event: dict) -> None:
+        """Bridge SecurityManager observer events onto the event bus."""
+
+        self.events.emit(
+            event_type=event["event_type"],
+            source="security",
+            payload={
+                "identity_id": event["identity_id"],
+                "success": event["success"],
+            },
+        )
+
+    def _attach_event_consumers(self) -> None:
+        """Subscribe C.O.R.E. consumers to event bus events."""
+
+        self.events.subscribe(
+            "SYSTEM_STARTED",
+            self._consume_system_started,
+        )
+
+        self.events.subscribe(
+            "SYSTEM_STOPPED",
+            self._consume_system_stopped,
+        )
+
+        self.events.subscribe(
+            "SERVICE_FAILED",
+            self._consume_service_failed,
+        )
+
+    def _consume_system_started(self, event) -> None:
+        """React to application startup by refreshing health."""
+
+        self.health.check_all()
+
+    def _consume_system_stopped(self, event) -> None:
+        """React to application shutdown."""
+
+        self.logger.info("System stopped event consumed.")
+
+    def _consume_service_failed(self, event) -> None:
+        """Log a service failure event."""
+
+        self.logger.error(
+            f"Service event failure: "
+            f"{event.payload.get('service_id')}."
         )
 
     def _register_health_checks(self) -> None:

@@ -89,6 +89,11 @@ class EventBus:
 
         A snapshot of the handlers is taken before dispatch so handlers may
         safely subscribe or unsubscribe while an event is being processed.
+
+        Handler failures are isolated: a failing subscriber is recorded as
+        a delivery failure and does not prevent other subscribers from
+        receiving the event. This keeps a single misbehaving consumer from
+        breaking the rest of C.O.R.E.
         """
 
         if not isinstance(event, Event):
@@ -110,8 +115,6 @@ class EventBus:
             except Exception:
                 with self._lock:
                     self._handler_failures += 1
-
-                raise
 
     def emit(
         self,

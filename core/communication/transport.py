@@ -95,13 +95,17 @@ class LocalTransport(Transport):
     hardware simulators.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        on_delivery: Callable[[Message], None] | None = None,
+    ) -> None:
         self._handlers: dict[str, MessageHandler] = {}
         self._lock = RLock()
 
         self._active = True
         self._messages_sent = 0
         self._messages_received = 0
+        self._on_delivery = on_delivery
 
     def start(self) -> None:
         """Start the transport."""
@@ -212,6 +216,12 @@ class LocalTransport(Transport):
             raise MessageError(
                 "Communication handlers must return a Message or None."
             )
+
+        if self._on_delivery is not None:
+            try:
+                self._on_delivery(message)
+            except Exception:
+                pass
 
         return response
 

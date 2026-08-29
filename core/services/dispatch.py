@@ -1,8 +1,11 @@
+from collections.abc import Callable
 from typing import Any
 
 from core.communication import Message
 from core.services.manager import ServiceManager
 from core.services.models import ServiceRequest, ServiceResponse
+
+EventEmitter = Callable[[str, str, dict], None]
 
 SERVICE_ENDPOINT_PREFIX = "service:"
 
@@ -23,8 +26,13 @@ class ServiceDispatcher:
         Message -> Router -> Destination -> Service -> Operation -> Response
     """
 
-    def __init__(self, services: ServiceManager) -> None:
+    def __init__(
+        self,
+        services: ServiceManager,
+        emitter: EventEmitter | None = None,
+    ) -> None:
         self._services = services
+        self._emitter = emitter
 
     def endpoint_for(self, service_id: str) -> str:
         """Return the transport endpoint that dispatches to a service."""
@@ -84,12 +92,33 @@ class ServiceDispatcher:
                 **request.payload,
             )
         except Exception as exc:
+            if self._emitter is not None:
+                self._emitter(
+                    "SERVICE_FAILED",
+                    f"service:{request.service_id}",
+                    {
+                        "service_id": request.service_id,
+                        "operation": request.operation,
+                        "error": str(exc),
+                    },
+                )
+
             return ServiceResponse(
                 service_id=request.service_id,
                 operation=request.operation,
                 success=False,
                 request_id=request.request_id,
                 error=str(exc),
+            )
+
+        if self._emitter is not None:
+            self._emitter(
+                "SERVICE_EXECUTED",
+                f"service:{request.service_id}",
+                {
+                    "service_id": request.service_id,
+                    "operation": request.operation,
+                },
             )
 
         return ServiceResponse(
