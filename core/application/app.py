@@ -63,7 +63,8 @@ class CoreApplication:
 
         self.communication = LocalCommunication()
         self.resources = ResourceRegistry()
-        self.organization = OrganizationEngine()
+        self.organization = OrganizationEngine(registry=self.resources)
+        self.resources.attach_organization(self.organization)
         self.events = EventBus()
         self.health = HealthMonitor()
         self.dependencies = DependencyManager()
@@ -409,6 +410,51 @@ class CoreApplication:
         )
 
         self.services.register_handler(
+            "resources",
+            "discover",
+            lambda **kwargs: {
+                "resources": [
+                    self._resource_snapshot(resource)
+                    for resource in self.resources.discover(**kwargs)
+                ]
+            },
+        )
+
+        self.services.register_handler(
+            "resources",
+            "update",
+            lambda resource_id, **kwargs: {
+                "resource": self._resource_snapshot(
+                    self.resources.update(resource_id, **kwargs)
+                )
+            },
+        )
+
+        self.services.register_handler(
+            "resources",
+            "remove",
+            lambda resource_id: {
+                "removed": self.resources.unregister(resource_id).resource_id
+            },
+        )
+
+        self.services.register_handler(
+            "resources",
+            "category",
+            lambda resource_id: {
+                "organization_entries": [
+                    {
+                        "id": entry.entry_id,
+                        "category": entry.category,
+                        "name": entry.name,
+                        "resource_id": entry.resource_id,
+                    }
+                    for entry in self.organization.by_resource(resource_id)
+                ]
+            },
+        )
+
+        self.services.register_handler(
             "organization",
             "list",
             lambda: {
@@ -543,6 +589,8 @@ class CoreApplication:
             "name": resource.name,
             "type": resource.resource_type,
             "status": resource.status,
+            "owner": resource.owner,
+            "source": resource.source,
             "capabilities": list(resource.capabilities),
             "metadata": dict(resource.metadata),
         }
