@@ -20,7 +20,7 @@ from core.logging import CoreLogger
 from core.organization import OrganizationEngine
 from core.resources import Resource, ResourceRegistry
 from core.routing import Router
-from core.runtime import Runtime
+from core.runtime import Runtime, RuntimeState
 from core.security import SecurityManager
 from core.services import (
     Service,
@@ -72,6 +72,7 @@ class CoreApplication:
         )
 
         self._initialized = False
+        self._disabled_components: set[str] = set()
 
         self._register_runtime_components()
         self._register_dependencies()
@@ -263,8 +264,13 @@ class CoreApplication:
         for service in internal_services:
             self.services.register(service)
 
-    def _initialize_configuration(self) -> None:
-        """Load and validate the C.O.R.E. configuration."""
+    def _load_configuration(self) -> None:
+        """
+        Load configuration and apply the component policy.
+
+        Configuration is loaded before the runtime starts so enable/disable
+        controls are in effect from the very first component initialization.
+        """
 
         self.configuration.start()
 
@@ -281,6 +287,101 @@ class CoreApplication:
         self.logger.info(
             f"Configuration loaded: {path}"
         )
+
+        self._apply_component_policy()
+        self._deactivate_disabled_components()
+
+    def _apply_component_policy(self) -> None:
+        """
+        Apply the component enable/disable policy to the runtime.
+
+        Disabling a component also disables every enabled component that
+        transitively depends on it, so a valid configuration never leaves an
+        enabled component depending on a disabled dependency.
+        """
+
+        requested_disabled = {
+            component
+            for component in self.runtime.component_ids()
+            if not self._component_enabled(component)
+        }
+
+        disabled = set(requested_disabled)
+
+        changed = True
+
+        while changed:
+            changed = False
+
+            for component in self.runtime.component_ids():
+                if component in disabled:
+                    continue
+
+                dependencies = self.runtime.get_dependencies(component)
+
+                if any(dep in disabled for dep in dependencies):
+                    disabled.add(component)
+                    changed = True
+
+        for component in self.runtime.component_ids():
+            self.runtime.set_enabled(
+                component,
+                component not in disabled,
+            )
+
+        self._disabled_components = disabled
+
+        if disabled:
+            self.logger.warning(
+                "Components disabled by configuration: "
+                + ", ".join(sorted(disabled))
+            )
+
+    def _component_enabled(self, component_id: str) -> bool:
+        """Return whether a component is enabled by configuration."""
+
+        if self.configuration.has(
+            f"components.{component_id}.enabled"
+        ):
+            value = self.configuration.get(
+                f"components.{component_id}.enabled"
+            )
+
+            if isinstance(value, bool):
+                return value
+
+        if self.configuration.has(f"{component_id}.enabled"):
+            value = self.configuration.get(f"{component_id}.enabled")
+
+            if isinstance(value, bool):
+                return value
+
+        return True
+
+    def _deactivate_disabled_components(self) -> None:
+        """Stop subsystems whose components are disabled by configuration."""
+
+        if "communication" in self._disabled_components:
+            self.communication.stop()
+
+        if "events" in self._disabled_components:
+            self.events.stop()
+
+        if "security" in self._disabled_components:
+            self.security.stop()
+
+    def _service_enabled(self, service_id: str) -> bool:
+        """Return whether a service's subsystem is enabled."""
+
+        if service_id in self.runtime.component_ids():
+            return self.runtime.is_enabled(service_id)
+
+        return True
+
+    def _initialize_configuration(self) -> None:
+        """Activate the configuration manager."""
+
+        self.configuration.start()
 
     def _initialize_logging(self) -> None:
         """Apply configuration-controlled logging behavior."""
@@ -361,6 +462,9 @@ class CoreApplication:
         self._register_service_endpoints()
 
         for service in self.services.list():
+            if not self._service_enabled(service.service_id):
+                continue
+
             try:
                 self.services.start(service.service_id)
             except Exception as exc:
@@ -539,6 +643,9 @@ class CoreApplication:
         """Register transport endpoints that dispatch to services."""
 
         for service in self.services.list():
+            if not self._service_enabled(service.service_id):
+                continue
+
             endpoint = self.dispatcher.endpoint_for(service.service_id)
 
             if self.communication.has_endpoint(endpoint):
@@ -612,6 +719,9 @@ class CoreApplication:
 
         self.logger.info("C.O.R.E. initialized.")
 
+        if not self.events.is_running:
+            return
+
         for component in self.runtime.initialized_components():
             self.events.emit(
                 event_type=COMPONENT_STARTED,
@@ -621,6 +731,9 @@ class CoreApplication:
 
     def _emit_message_sent(self, message) -> None:
         """Publish a communication event for a delivered message."""
+
+        if not self.events.is_running:
+            return
 
         self.events.emit(
             event_type=MESSAGE_SENT,
@@ -635,6 +748,9 @@ class CoreApplication:
     def _emit_service_event(self, event_type: str, source: str, payload: dict) -> None:
         """Publish a service lifecycle/execution event."""
 
+        if not self.events.is_running:
+            return
+
         self.events.emit(
             event_type=event_type,
             source=source,
@@ -644,6 +760,9 @@ class CoreApplication:
     def _emit_resource_event(self, event_type: str, resource: Resource) -> None:
         """Publish a resource lifecycle event."""
 
+        if not self.events.is_running:
+            return
+
         self.events.emit(
             event_type=event_type,
             source="resources",
@@ -652,6 +771,9 @@ class CoreApplication:
 
     def _emit_health_changed(self, result) -> None:
         """Publish a health change event for a component status transition."""
+
+        if not self.events.is_running:
+            return
 
         self.events.emit(
             event_type=HEALTH_CHANGED,
@@ -664,6 +786,9 @@ class CoreApplication:
 
     def _bridge_security_event(self, event: dict) -> None:
         """Bridge SecurityManager observer events onto the event bus."""
+
+        if not self.events.is_running:
+            return
 
         self.events.emit(
             event_type=event["event_type"],
@@ -726,6 +851,9 @@ class CoreApplication:
         }
 
         for component_id, check in checks.items():
+            if not self._service_enabled(component_id):
+                continue
+
             self.health.register(component_id, check)
 
     def _check_runtime(self) -> HealthResult:
@@ -943,7 +1071,15 @@ class CoreApplication:
                 "C.O.R.E. application is not initialized."
             )
 
+        if self.state == RuntimeState.RUNNING:
+            return
+
+        self._load_configuration()
+
         self.runtime.start()
+
+        if not self.events.is_running:
+            return
 
         self.events.emit(
             event_type=SYSTEM_STARTED,
@@ -952,7 +1088,19 @@ class CoreApplication:
         )
 
     def stop(self) -> None:
+        core_initialized = "core" in self.runtime.initialized_components()
+
         self.runtime.stop()
+
+        if not core_initialized and self.events.is_running:
+            try:
+                self.events.emit(
+                    event_type=SYSTEM_STOPPED,
+                    source="core",
+                    payload={"state": "stopped"},
+                )
+            except Exception:
+                pass
 
     def restart(self) -> None:
         self.stop()
@@ -960,7 +1108,7 @@ class CoreApplication:
         self._register_dependencies()
         self._register_internal_services()
 
-        self.runtime.start()
+        self.start()
 
     def health_check(self):
         return self.health.check_all()

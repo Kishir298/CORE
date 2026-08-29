@@ -55,6 +55,7 @@ class ConfigurationValidator:
         self._validate_core(config, errors)
         self._validate_environment(config, errors)
         self._validate_optional_sections(config, errors)
+        self._validate_components(config, errors)
 
         if errors:
             raise ValueError(
@@ -166,4 +167,42 @@ class ConfigurationValidator:
             if not isinstance(value, dict):
                 errors.append(
                     f"{section} must be a dictionary."
+                )
+
+    @staticmethod
+    def _validate_components(
+        config: Configuration,
+        errors: list[str],
+    ) -> None:
+        """Validate the component enable/disable configuration section."""
+
+        if not config.has("components"):
+            return
+
+        components: Any = config.get("components")
+
+        if not isinstance(components, dict):
+            errors.append("components must be a dictionary.")
+            return
+
+        for name, settings in components.items():
+            if not isinstance(name, str) or not name.strip():
+                errors.append(
+                    "Component names in 'components' must be "
+                    "non-empty strings."
+                )
+                continue
+
+            if not isinstance(settings, dict):
+                errors.append(
+                    f"components.{name} must be a dictionary."
+                )
+                continue
+
+            if "enabled" not in settings:
+                continue
+
+            if not isinstance(settings["enabled"], bool):
+                errors.append(
+                    f"components.{name}.enabled must be a boolean."
                 )

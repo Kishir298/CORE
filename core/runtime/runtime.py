@@ -24,6 +24,7 @@ class Runtime:
         self._shutdown_handlers: dict[str, Callable[[], None]] = {}
         self._component_dependencies: dict[str, set[str]] = {}
         self._component_state: dict[str, ComponentState] = {}
+        self._enabled: dict[str, bool] = {}
 
         self._initialized_components: list[str] = []
         self._error: Exception | None = None
@@ -70,6 +71,7 @@ class Runtime:
         self._components[name] = initializer
         self._component_dependencies[name] = set(dependencies or [])
         self._component_state[name] = ComponentState.REGISTERED
+        self._enabled[name] = True
 
         if shutdown is not None:
             self._shutdown_handlers[name] = shutdown
@@ -99,6 +101,39 @@ class Runtime:
 
         return sorted(self._component_dependencies[name])
 
+    def set_enabled(self, name: str, enabled: bool) -> None:
+        """
+        Enable or disable a registered component.
+
+        Disabled components are skipped during startup. An enabled component
+        that depends on a disabled component is rejected at startup as a
+        fail-safe safeguard.
+        """
+
+        if self._state != RuntimeState.STOPPED:
+            raise RuntimeError(
+                "Components cannot be enabled or disabled while "
+                "runtime is active."
+            )
+
+        if name not in self._components:
+            raise RuntimeError(f"Component not registered: {name}")
+
+        self._enabled[name] = bool(enabled)
+
+    def is_enabled(self, name: str) -> bool:
+        """Return whether a registered component is enabled."""
+
+        if name not in self._components:
+            raise RuntimeError(f"Component not registered: {name}")
+
+        return self._enabled.get(name, True)
+
+    def component_ids(self) -> list[str]:
+        """Return the identifiers of all registered components."""
+
+        return list(self._components.keys())
+
     def component_state(self, name: str) -> ComponentState:
         """Return the lifecycle state of a registered component."""
 
@@ -115,6 +150,8 @@ class Runtime:
         Resolve the complete dependency-aware startup order.
 
         Dependencies always appear before the components that require them.
+        Disabled components are excluded from the order, and any enabled
+        component that depends on a disabled component is rejected.
         """
 
         order: list[str] = []
@@ -140,6 +177,12 @@ class Runtime:
             for dependency in sorted(
                 self._component_dependencies.get(name, set())
             ):
+                if not self._enabled.get(dependency, True):
+                    raise RuntimeError(
+                        f"Component '{name}' depends on disabled "
+                        f"component '{dependency}'."
+                    )
+
                 visit(dependency)
 
             visiting.remove(name)
@@ -147,6 +190,9 @@ class Runtime:
             order.append(name)
 
         for name in self._components:
+            if not self._enabled.get(name, True):
+                continue
+
             visit(name)
 
         return order
@@ -176,6 +222,10 @@ class Runtime:
             self._state = RuntimeState.INITIALIZING
 
             start_order = self.get_start_order()
+
+            for name, enabled in self._enabled.items():
+                if not enabled:
+                    self._component_state[name] = ComponentState.DISABLED
 
             for name in start_order:
                 current = name
@@ -283,3 +333,4 @@ class Runtime:
         self._component_state.clear()
         self._initialized_components.clear()
         self._shutdown_errors.clear()
+        self._enabled.clear()

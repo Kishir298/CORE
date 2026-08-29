@@ -12,3 +12,27 @@ communication:
 
 network:
   enabled: false
+
+components:
+  configuration:
+    enabled: true
+  logging:
+    enabled: true
+  security:
+    enabled: true
+  resources:
+    enabled: true
+  organization:
+    enabled: true
+  events:
+    enabled: true
+  communication:
+    enabled: true
+  routing:
+    enabled: true
+  health:
+    enabled: true
+  dependencies:
+    enabled: true
+  services:
+    enabled: true

@@ -12,6 +12,7 @@ class RuntimeState(str, Enum):
 
 class ComponentState(str, Enum):
     REGISTERED = "registered"
+    DISABLED = "disabled"
     STARTING = "starting"
     RUNNING = "running"
     STOPPING = "stopping"
