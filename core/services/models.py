@@ -14,6 +14,28 @@ class ServiceStatus(str, Enum):
 
 
 @dataclass
+class ServiceRequest:
+    """A request to execute a service operation."""
+
+    service_id: str
+    operation: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    request_id: str | None = None
+
+
+@dataclass
+class ServiceResponse:
+    """The result of executing a service operation."""
+
+    service_id: str
+    operation: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    success: bool = True
+    request_id: str | None = None
+    error: str | None = None
+
+
+@dataclass
 class Service:
     service_id: str
     name: str

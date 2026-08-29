@@ -7,11 +7,15 @@ from core.events import EventBus
 from core.health import HealthMonitor, HealthResult, HealthStatus
 from core.logging import CoreLogger
 from core.organization import OrganizationEngine
-from core.resources import ResourceRegistry
+from core.resources import Resource, ResourceRegistry
 from core.routing import Router
 from core.runtime import Runtime
 from core.security import SecurityManager
-from core.services import ServiceManager, Service
+from core.services import (
+    Service,
+    ServiceDispatcher,
+    ServiceManager,
+)
 
 SYSTEM_STARTED = "SYSTEM_STARTED"
 SYSTEM_STOPPED = "SYSTEM_STOPPED"
@@ -66,6 +70,7 @@ class CoreApplication:
         self.security = SecurityManager()
         self.services = ServiceManager()
         self.routing = Router(self.communication)
+        self.dispatcher = ServiceDispatcher(self.services)
 
         self._initialized = False
 
@@ -329,9 +334,10 @@ class CoreApplication:
         self.communication.start()
 
     def _initialize_routing(self) -> None:
-        """Activate the routing subsystem."""
+        """Activate the routing subsystem and register service routes."""
 
         self.routing.start()
+        self._register_service_routes()
 
     def _initialize_health(self) -> None:
         """Activate health monitoring and register component checks."""
@@ -345,7 +351,10 @@ class CoreApplication:
         self.dependencies.validate()
 
     def _initialize_services(self) -> None:
-        """Start C.O.R.E. internal services."""
+        """Start C.O.R.E. internal services and expose their operations."""
+
+        self._register_service_capabilities()
+        self._register_service_endpoints()
 
         for service in self.services.list():
             try:
@@ -356,6 +365,187 @@ class CoreApplication:
                     f"'{service.service_id}': {exc}"
                 )
                 raise
+
+    def _register_service_capabilities(self) -> None:
+        """Register real operation handlers for internal services."""
+
+        self.services.register_handler(
+            "resources",
+            "list",
+            lambda: {
+                "resources": [
+                    {
+                        "id": resource.resource_id,
+                        "name": resource.name,
+                        "type": resource.resource_type,
+                        "status": resource.status,
+                    }
+                    for resource in self.resources
+                ]
+            },
+        )
+
+        self.services.register_handler(
+            "resources",
+            "get",
+            lambda resource_id: {
+                "resource": self._resource_snapshot(
+                    self.resources.get(resource_id)
+                )
+            },
+        )
+
+        self.services.register_handler(
+            "resources",
+            "register",
+            lambda resource_id, name, resource_type, **kwargs: (
+                self._register_resource(
+                    resource_id=resource_id,
+                    name=name,
+                    resource_type=resource_type,
+                    **kwargs,
+                )
+            ),
+        )
+
+        self.services.register_handler(
+            "organization",
+            "list",
+            lambda: {
+                "entries": [
+                    {
+                        "id": entry.entry_id,
+                        "category": entry.category,
+                        "name": entry.name,
+                        "resource_id": entry.resource_id,
+                    }
+                    for entry in self.organization
+                ]
+            },
+        )
+
+        self.services.register_handler(
+            "organization",
+            "by_category",
+            lambda category: {
+                "entries": [
+                    {
+                        "id": entry.entry_id,
+                        "category": entry.category,
+                        "name": entry.name,
+                        "resource_id": entry.resource_id,
+                    }
+                    for entry in self.organization.by_category(category)
+                ]
+            },
+        )
+
+        self.services.register_handler(
+            "routing",
+            "routes",
+            lambda: {"count": self.routing.count()},
+        )
+
+        self.services.register_handler(
+            "health",
+            "status",
+            lambda: {
+                "checks": [
+                    {
+                        "component_id": result.component_id,
+                        "status": result.status.value,
+                        "message": result.message,
+                    }
+                    for result in self.health.check_all()
+                ],
+                "overall": self.health.overall_status().value,
+            },
+        )
+
+        self.services.register_handler(
+            "health",
+            "overall",
+            lambda: {"overall": self.health.overall_status().value},
+        )
+
+        self.services.register_handler(
+            "communication",
+            "status",
+            lambda: {
+                "running": self.communication.is_running,
+                "endpoints": self.communication.endpoint_count(),
+                "messages": self.communication.message_count(),
+            },
+        )
+
+        self.services.register_handler(
+            "events",
+            "status",
+            lambda: {
+                "running": self.events.is_running,
+                "published": self.events.event_count(),
+                "subscribers": self.events.subscriber_count(),
+            },
+        )
+
+    def _register_service_endpoints(self) -> None:
+        """Register transport endpoints that dispatch to services."""
+
+        for service in self.services.list():
+            endpoint = self.dispatcher.endpoint_for(service.service_id)
+
+            if self.communication.has_endpoint(endpoint):
+                continue
+
+            self.communication.register(endpoint, self.dispatcher.handle)
+
+    def _register_service_routes(self) -> None:
+        """Register routes from application message types to services."""
+
+        routes = {
+            "RESOURCES.LIST": "service:resources",
+            "HEALTH.STATUS": "service:health",
+            "ORGANIZATION.LIST": "service:organization",
+            "ROUTING.ROUTES": "service:routing",
+            "COMMUNICATION.STATUS": "service:communication",
+        }
+
+        for message_type, destination in routes.items():
+            if not self.routing.has_route(message_type):
+                self.routing.add_route(message_type, destination)
+
+    def _register_resource(
+        self,
+        resource_id: str,
+        name: str,
+        resource_type: str,
+        **kwargs,
+    ) -> dict:
+        """Register a resource and return its snapshot."""
+
+        resource = Resource(
+            resource_id=resource_id,
+            name=name,
+            resource_type=resource_type,
+            **kwargs,
+        )
+
+        self.resources.register(resource)
+
+        return {"resource": self._resource_snapshot(resource)}
+
+    @staticmethod
+    def _resource_snapshot(resource: Resource) -> dict:
+        """Return a serializable snapshot of a resource."""
+
+        return {
+            "id": resource.resource_id,
+            "name": resource.name,
+            "type": resource.resource_type,
+            "status": resource.status,
+            "capabilities": list(resource.capabilities),
+            "metadata": dict(resource.metadata),
+        }
 
     def _initialize(self) -> None:
         """Initialize the complete C.O.R.E. application."""
