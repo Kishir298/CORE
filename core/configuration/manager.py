@@ -73,6 +73,24 @@ class ConfigurationManager:
 
         return configuration
 
+    def load_environment(
+        self,
+        prefix: str = "CORE_",
+    ) -> dict[str, Any]:
+        """Load matching environment variables into the active configuration."""
+
+        with self._lock:
+            self._require_active()
+            if self._configuration is None:
+                # No file loaded yet — start from an empty configuration so
+                # environment overrides can still drive component policy.
+                self._configuration = Configuration(
+                    data={},
+                    environment="development",
+                )
+
+            return self._configuration.load_environment(prefix=prefix)
+
     def set(self, path: str, value: Any) -> None:
         """Set a configuration value."""
 

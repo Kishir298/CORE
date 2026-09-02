@@ -5,6 +5,7 @@ from .local import (
 )
 from .models import Message
 from .serializer import MessageSerializer
+from .tcp import TcpTransport
 from .transport import Transport
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "Transport",
     "LocalCommunication",
     "LocalTransport",
+    "TcpTransport",
 ]

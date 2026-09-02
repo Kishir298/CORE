@@ -158,6 +158,8 @@ class ConfigurationValidator:
             "health",
             "resources",
             "runtime",
+            "network",
+            "rescs",
         ):
             if not config.has(section):
                 continue
@@ -168,6 +170,78 @@ class ConfigurationValidator:
                 errors.append(
                     f"{section} must be a dictionary."
                 )
+
+        # Validate network.enabled if present
+        if config.has("network"):
+            network = config.get("network")
+            if isinstance(network, dict) and "enabled" in network:
+                if not isinstance(network["enabled"], bool):
+                    errors.append("network.enabled must be a boolean.")
+
+        # Validate communication.transport/host/port if present
+        if config.has("communication"):
+            comm = config.get("communication")
+            if isinstance(comm, dict):
+                if "transport" in comm and not isinstance(
+                    comm["transport"], str
+                ):
+                    errors.append("communication.transport must be a string.")
+                if "host" in comm and not isinstance(comm["host"], str):
+                    errors.append("communication.host must be a string.")
+                if "port" in comm and not isinstance(
+                    comm["port"], (int, str)
+                ):
+                    errors.append(
+                        "communication.port must be an integer or numeric string."
+                    )
+                elif "port" in comm and isinstance(comm["port"], str):
+                    try:
+                        int(comm["port"])
+                    except ValueError:
+                        errors.append(
+                            "communication.port string must be numeric."
+                        )
+
+        # Validate security section if present
+        if config.has("security"):
+            sec = config.get("security")
+            if isinstance(sec, dict):
+                if "enforce_authorization" in sec and not isinstance(
+                    sec["enforce_authorization"], bool
+                ):
+                    errors.append(
+                        "security.enforce_authorization must be a boolean."
+                    )
+                if "provider" in sec and not isinstance(
+                    sec["provider"], str
+                ):
+                    errors.append("security.provider must be a string.")
+                if "authentication" in sec:
+                    auth = sec["authentication"]
+                    if isinstance(auth, dict) and "provider" in auth:
+                        if not isinstance(auth["provider"], str):
+                            errors.append(
+                                "security.authentication.provider must be a string."
+                            )
+
+        # Validate rescs section if present
+        if config.has("rescs"):
+            rescs = config.get("rescs")
+            if isinstance(rescs, dict):
+                if "enabled" in rescs and not isinstance(
+                    rescs["enabled"], bool
+                ):
+                    errors.append("rescs.enabled must be a boolean.")
+                if "adapter" in rescs and not isinstance(
+                    rescs["adapter"], str
+                ):
+                    errors.append("rescs.adapter must be a string.")
+                if "path" in rescs and not isinstance(rescs["path"], str):
+                    errors.append("rescs.path must be a string.")
+                if "endpoint" in rescs and not isinstance(
+                    rescs["endpoint"], str
+                ):
+                    errors.append("rescs.endpoint must be a string.")
 
     @staticmethod
     def _validate_components(

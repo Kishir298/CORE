@@ -19,6 +19,7 @@ class MessageSerializer:
             "timestamp": message.timestamp.isoformat(),
             "request_id": message.request_id,
             "payload": message.payload,
+            "identity_id": message.identity_id,
         }
 
         return json.dumps(data)
@@ -37,4 +38,5 @@ class MessageSerializer:
             timestamp=datetime.fromisoformat(parsed["timestamp"]),
             request_id=parsed.get("request_id"),
             payload=parsed.get("payload", {}),
+            identity_id=parsed.get("identity_id"),
         )

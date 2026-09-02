@@ -129,6 +129,12 @@ class Router:
 
         return response
 
+    def set_transport(self, communication: Transport) -> None:
+        """Replace the underlying transport (used for config-driven selection)."""
+
+        with self._lock:
+            self._communication = communication
+
     def clear(self) -> None:
         """Remove all configured routes."""
 

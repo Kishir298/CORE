@@ -37,4 +37,5 @@ class Message:
             message_type=message_type,
             payload=payload or {},
             request_id=self.message_id,
+            identity_id=self.identity_id,
         )

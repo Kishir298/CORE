@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
@@ -150,6 +151,74 @@ class Configuration:
         """Return whether the configuration contains no values."""
 
         return not self.data
+
+    def load_environment(
+        self,
+        prefix: str = "CORE_",
+    ) -> dict[str, Any]:
+        """
+        Load matching environment variables.
+
+        Environment names are converted to lowercase dotted keys.
+
+        Example:
+            CORE_DATABASE_HOST -> database.host
+            CORE_COMPONENTS__COMMUNICATION__ENABLED -> components.communication.enabled
+        """
+
+        if not prefix:
+            raise ValueError("Environment prefix cannot be empty.")
+
+        loaded: dict[str, Any] = {}
+
+        for environment_key, value in os.environ.items():
+            if not environment_key.startswith(prefix):
+                continue
+
+            config_key = environment_key[len(prefix):].lower()
+
+            if not config_key:
+                continue
+
+            # Support both single-underscore and double-underscore separators:
+            # CORE_DATABASE_HOST -> database.host
+            # CORE_COMPONENTS__COMMUNICATION__ENABLED -> components.communication.enabled
+            placeholder = "\x00"
+            config_key = config_key.replace("__", placeholder)
+            config_key = config_key.replace("_", ".")
+            config_key = config_key.replace(placeholder, ".")
+
+            # Coerce common string representations to typed values so
+            # boolean flags like CORE_COMPONENTS__COMMUNICATION__ENABLED=false
+            # correctly disable components.
+            coerced: Any = value
+            lowered = value.strip().lower()
+            if lowered == "true":
+                coerced = True
+            elif lowered == "false":
+                coerced = False
+            elif lowered.isdigit() or (
+                lowered.startswith("-") and lowered[1:].isdigit()
+            ):
+                try:
+                    coerced = int(value.strip())
+                except ValueError:
+                    coerced = value
+            else:
+                # Attempt float for numeric-like strings without losing string intent
+                try:
+                    if "." in value.strip():
+                        maybe_float = float(value.strip())
+                        # Only coerce if the original string looks like a number
+                        if str(maybe_float) == value.strip() or value.strip().replace(".", "", 1).lstrip("-").isdigit():
+                            coerced = maybe_float
+                except ValueError:
+                    pass
+
+            loaded[config_key] = coerced  # type: ignore[assignment]
+            self.set(config_key, coerced)
+
+        return loaded
 
     @staticmethod
     def _parse_path(path: str) -> list[str]:
