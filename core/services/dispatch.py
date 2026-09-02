@@ -89,10 +89,19 @@ class ServiceDispatcher:
                 f"'{OPERATION_KEY}'."
             )
 
+        # Credential fields are consumed for authentication and must not be
+        # forwarded as service operation arguments.
+        credential_keys = {
+            "_credential",
+            "credential",
+            "token",
+            "_token",
+            "api_token",
+        }
         arguments = {
             key: value
             for key, value in message.payload.items()
-            if key != OPERATION_KEY
+            if key != OPERATION_KEY and key not in credential_keys
         }
 
         return ServiceRequest(
@@ -248,8 +257,21 @@ class ServiceDispatcher:
                 f"'{request.operation}'.",
             )
 
+        # Extract opaque credential from payload if supplied (supports Windows
+        # co-hosted token flows without hardcoding secrets).
+        credential = None
+        if isinstance(message.payload, dict):
+            for key in ("_credential", "credential", "token", "_token", "api_token"):
+                if key in message.payload:
+                    credential = message.payload[key]
+                    break
+
         try:
-            self._security.authenticate(identity_id)
+            # Support both new (identity_id, credential) and legacy (identity_id) signatures
+            try:
+                self._security.authenticate(identity_id, credential)
+            except TypeError:
+                self._security.authenticate(identity_id)  # type: ignore
             self._security.authorize(identity_id, required)
         except Exception as exc:
             return self._deny(request, message, str(exc))

@@ -8,6 +8,11 @@ from .manager import (
 )
 from .models import Identity, IdentityType, Permission
 from .policy import SecurityPolicy
+from .provider import (
+    AuthenticationProvider,
+    ExistenceAuthenticationProvider,
+    TokenAuthenticationProvider,
+)
 
 __all__ = [
     "Identity",
@@ -20,4 +25,7 @@ __all__ = [
     "IdentityNotFound",
     "AuthenticationError",
     "AuthorizationError",
+    "AuthenticationProvider",
+    "ExistenceAuthenticationProvider",
+    "TokenAuthenticationProvider",
 ]

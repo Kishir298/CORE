@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from datetime import datetime, timezone
 from threading import RLock
+from typing import Any
 
 from core.errors import CoreError
 
@@ -35,10 +36,15 @@ class SecurityManager:
     Provides the security foundation for C.O.R.E.
 
     SecurityManager manages identities, permissions, authentication,
-    authorization, and security activity metrics.
+    authorization, and security activity metrics. Authentication is
+    delegated to a pluggable AuthenticationProvider so the default
+    existence-only behavior can be replaced with token verification
+    without hardcoding credentials.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, provider: Any | None = None) -> None:
+        from .provider import ExistenceAuthenticationProvider
+
         self._identities: dict[str, Identity] = {}
         self._lock = RLock()
         self._active = True
@@ -49,6 +55,7 @@ class SecurityManager:
         self._authorization_failures = 0
 
         self._event_handlers: list[SecurityEventHandler] = []
+        self._provider = provider or ExistenceAuthenticationProvider()
 
     def start(self) -> None:
         """Start the security manager."""
@@ -124,6 +131,27 @@ class SecurityManager:
             if handler in self._event_handlers:
                 self._event_handlers.remove(handler)
 
+    def set_provider(self, provider: Any) -> None:
+        """Replace the authentication provider."""
+
+        if provider is None:
+            raise ValueError("Authentication provider cannot be None.")
+
+        if not hasattr(provider, "authenticate") or not callable(
+            getattr(provider, "authenticate")
+        ):
+            raise TypeError("Provider must implement authenticate().")
+
+        with self._lock:
+            self._provider = provider
+
+    @property
+    def provider(self) -> Any:
+        """Return the active authentication provider."""
+
+        with self._lock:
+            return self._provider
+
     def register_identity(self, identity: Identity) -> Identity:
         """Register a new identity."""
 
@@ -173,12 +201,15 @@ class SecurityManager:
                     f"Identity not found: {identity_id}"
                 ) from exc
 
-    def authenticate(self, identity_id: str) -> Identity:
+    def authenticate(
+        self, identity_id: str, credential: Any | None = None
+    ) -> Identity:
         """
-        Authenticate an identity.
+        Authenticate an identity via the configured provider.
 
-        Credential verification will be implemented by a dedicated
-        authentication provider later.
+        The default ExistenceAuthenticationProvider checks existence only.
+        TokenAuthenticationProvider verifies credential against
+        identity.metadata["token"] when present.
         """
 
         with self._lock:
@@ -198,6 +229,47 @@ class SecurityManager:
                 )
 
                 raise
+
+            provider = self._provider
+
+        # Delegate to provider outside lock to avoid deadlocks; provider
+        # is expected to be stateless or internally synchronized.
+        try:
+            # Support providers that accept (identity, credential) or
+            # legacy (identity) signatures.
+            try:
+                authenticated = provider.authenticate(identity, credential)
+            except TypeError:
+                # Fallback for legacy provider with single arg
+                authenticated = provider.authenticate(identity)  # type: ignore
+
+            if not authenticated:
+                raise AuthenticationError(
+                    f"Authentication failed for identity: {identity_id}"
+                )
+
+        except IdentityNotFound:
+            raise
+        except AuthenticationError:
+            with self._lock:
+                self._authentication_failures += 1
+            self._emit_event(
+                "AUTHENTICATION_FAILED",
+                identity_id,
+                False,
+            )
+            raise
+        except Exception as exc:
+            with self._lock:
+                self._authentication_failures += 1
+            self._emit_event(
+                "AUTHENTICATION_FAILED",
+                identity_id,
+                False,
+            )
+            raise AuthenticationError(
+                f"Authentication failed for identity: {identity_id}"
+            ) from exc
 
         self._emit_event(
             "AUTHENTICATION_SUCCEEDED",

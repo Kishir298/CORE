@@ -1,5 +1,7 @@
 import argparse
 import time
+import warnings
+from pathlib import Path
 
 from core.application import CoreApplication
 from core.runtime import Runtime
@@ -11,6 +13,21 @@ def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="core",
         description="C.O.R.E. control interface.",
+    )
+
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to configuration YAML file (default: config/core.yaml if present).",
+    )
+    parser.add_argument(
+        "--env",
+        "--environment",
+        dest="environment",
+        type=str,
+        default="development",
+        help="Configuration environment (default: development).",
     )
 
     subparsers = parser.add_subparsers(dest="command")
@@ -152,11 +169,19 @@ def execute(
     """
     Execute a CLI command against a Runtime.
 
-    This compatibility interface is retained for direct runtime tests and
-    low-level usage. The full application-aware CLI path is handled by
-    execute_application().
+    .. deprecated::
+        Use ``execute_application`` with a ``CoreApplication`` instance.
+        This shim is retained for backward compatibility and emits a
+        DeprecationWarning. Future versions will remove it.
     """
 
+    warnings.warn(
+        "core.cli.main.execute(runtime) is deprecated; use execute_application(app)",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    # Forward start/stop/status to runtime; other commands require CoreApplication
     if args.command == "start":
         runtime.start()
         print("C.O.R.E. started.")
@@ -176,28 +201,32 @@ def execute(
     if args.command == "services":
         print("Services:")
         print(
-            "  Service information requires CoreApplication."
+            "  Service information requires CoreApplication "
+            "(use: py -m core --config <path> services)."
         )
         return 0
 
     if args.command == "resources":
         print("Resources:")
         print(
-            "  Resource information requires CoreApplication."
+            "  Resource information requires CoreApplication "
+            "(use: py -m core --config <path> resources)."
         )
         return 0
 
     if args.command == "connections":
         print("Connections:")
         print(
-            "  Connection information requires CoreApplication."
+            "  Connection information requires CoreApplication "
+            "(use: py -m core --config <path> connections)."
         )
         return 0
 
     if args.command == "health":
         print("Health:")
         print(
-            "  Health information requires CoreApplication."
+            "  Health information requires CoreApplication "
+            "(use: py -m core --config <path> health)."
         )
         return 0
 
@@ -253,7 +282,7 @@ def run_application(app: CoreApplication) -> int:
     try:
         app.start()
 
-        print("C.O.R.E. v0.2")
+        print("C.O.R.E. v0.2.0")
         print("────────────────────────")
         print(
             f"Runtime: {app.state.value.upper()}"
@@ -283,7 +312,15 @@ def main() -> int:
     parser = create_parser()
     args = parser.parse_args()
 
-    app = CoreApplication()
+    config_path = getattr(args, "config", None)
+    environment = getattr(args, "environment", "development")
+
+    # Resolve config path: explicit --config wins, else default resolution
+    # inside CoreApplication.
+    app = CoreApplication(
+        config_path=Path(config_path) if config_path else None,
+        environment=environment,
+    )
 
     if args.command == "start":
         return run_application(app)
