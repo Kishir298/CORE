@@ -247,54 +247,314 @@ class FileRescsAdapter(RescsAdapter):
 
 class HttpRescsAdapter(RescsAdapter):
     """
-    HTTP adapter stub for future cross-process R.E.S.C.S. on the laptop.
+    HTTP adapter for cross-process R.E.S.C.S. on the Windows laptop.
 
-    When R.E.S.C.S. exposes an HTTP endpoint (e.g. http://localhost:8081),
-    this adapter would delegate persistence over HTTP. For v0.2 it is a
-    stub that raises a clear error so failures are explicit rather than
-    silent.
+    Delegates persistence over HTTP to a co-hosted R.E.S.C.S. service
+    (e.g. ``http://localhost:8081``) using the standard library only.
+    When the endpoint is unreachable the adapter falls back to an
+    in-memory cache so local operation is undisturbed while health
+    correctly reports ``healthy=False`` until the remote is reachable.
+
+    Contract (JSON over HTTP):
+      POST   /resources          {resource dict}
+      GET    /resources          -> {resources:[...]} or [...]
+      GET    /resources/{id}     -> {resource dict} or 404
+      DELETE /resources/{id}
+      POST   /runtimes           {record dict}
+      GET    /runtimes           -> {runtimes:[...]} or [...]
+      GET    /health             -> {healthy:bool, resources:int, runtimes:int}
+      POST   /clear
     """
 
-    def __init__(self, endpoint: str = "http://localhost:8081") -> None:
-        self._endpoint = endpoint
+    def __init__(
+        self,
+        endpoint: str = "http://localhost:8081",
+        timeout: float = 2.0,
+        fallback: bool = True,
+    ) -> None:
+        self._endpoint = endpoint.rstrip("/") if endpoint else "http://localhost:8081"
+        self._timeout = float(timeout) if timeout else 2.0
+        self._fallback_enabled = bool(fallback)
+        self._fallback = InMemoryRescsAdapter()
+        self._lock = RLock()
+        self._last_error: str | None = None
+        self._healthy: bool | None = None
 
-    def _not_implemented(self) -> None:
-        raise NotImplementedError(
-            f"HttpRescsAdapter not yet implemented (endpoint={self._endpoint}). "
-            "Configure rescs.adapter=memory or file for v0.2, or implement HTTP delegation."
+    def _url(self, path: str) -> str:
+        if not path.startswith("/"):
+            path = "/" + path
+        return self._endpoint + path
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+    ) -> Any | None:
+        import urllib.error
+        import urllib.request
+
+        url = self._url(path)
+        data = None
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                raw = resp.read()
+                if not raw:
+                    return None
+                text = raw.decode("utf-8")
+                if not text.strip():
+                    return None
+                try:
+                    return json.loads(text)
+                except Exception:
+                    return text
+        except urllib.error.HTTPError as exc:
+            # 404 is not an error for fetch – return None
+            if exc.code == 404:
+                return None
+            raise IOError(f"R.E.S.C.S. HTTP {method} {path} -> {exc.code} {exc.reason}") from exc
+        except Exception as exc:
+            raise IOError(f"R.E.S.C.S. HTTP {method} {path} failed: {exc}") from exc
+
+    def _resource_from_dict(self, data: dict[str, Any]) -> Resource:
+        from datetime import datetime
+
+        resource = Resource(
+            resource_id=data["resource_id"],
+            name=data["name"],
+            resource_type=data["resource_type"],
+            status=data.get("status", "offline"),
+            owner=data.get("owner"),
+            source=data.get("source"),
+            capabilities=data.get("capabilities", []),
+            metadata=data.get("metadata", {}),
+            connection_info=data.get("connection_info", {}),
         )
+        if data.get("last_seen"):
+            try:
+                resource.last_seen = datetime.fromisoformat(data["last_seen"])  # type: ignore
+            except Exception:
+                pass
+        if data.get("registered_at"):
+            try:
+                resource.registered_at = datetime.fromisoformat(data["registered_at"])  # type: ignore
+            except Exception:
+                pass
+        return resource
+
+    def _record_from_dict(self, data: dict[str, Any]) -> RuntimeRecord:
+        from datetime import datetime
+
+        record = RuntimeRecord(
+            entity_id=data["entity_id"],
+            entity_type=data["entity_type"],
+            status=data.get("status", "running"),
+            metadata=data.get("metadata", {}),
+        )
+        if data.get("start_time"):
+            try:
+                record.start_time = datetime.fromisoformat(data["start_time"])  # type: ignore
+            except Exception:
+                pass
+        if data.get("end_time"):
+            try:
+                record.end_time = datetime.fromisoformat(data["end_time"])  # type: ignore
+            except Exception:
+                pass
+        if data.get("duration") is not None:
+            try:
+                record.duration = data["duration"]  # type: ignore
+            except Exception:
+                pass
+        return record
 
     def persist_resource(self, resource: Resource) -> None:
-        self._not_implemented()
+        with self._lock:
+            # Always keep fallback in sync
+            self._fallback.persist_resource(resource)
+            try:
+                self._request("POST", "/resources", resource.to_dict())
+                self._last_error = None
+                self._healthy = True
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._healthy = False
+                if not self._fallback_enabled:
+                    raise
 
     def fetch_resource(self, resource_id: str) -> Resource | None:
-        self._not_implemented()
-        return None
+        with self._lock:
+            try:
+                result = self._request("GET", f"/resources/{resource_id}")
+                if result is None:
+                    return self._fallback.fetch_resource(resource_id) if self._fallback_enabled else None
+                # Server may wrap in {"resource": {...}} or return dict directly
+                if isinstance(result, dict) and "resource" in result and isinstance(result["resource"], dict):
+                    result = result["resource"]
+                if isinstance(result, dict) and "resource_id" in result:
+                    self._last_error = None
+                    self._healthy = True
+                    return self._resource_from_dict(result)
+                return self._fallback.fetch_resource(resource_id) if self._fallback_enabled else None
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._healthy = False
+                if self._fallback_enabled:
+                    return self._fallback.fetch_resource(resource_id)
+                raise
 
     def delete_resource(self, resource_id: str) -> None:
-        self._not_implemented()
+        with self._lock:
+            self._fallback.delete_resource(resource_id)
+            try:
+                self._request("DELETE", f"/resources/{resource_id}")
+                self._last_error = None
+                self._healthy = True
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._healthy = False
+                if not self._fallback_enabled:
+                    raise
 
     def list_resources(self) -> list[Resource]:
-        self._not_implemented()
-        return []
+        with self._lock:
+            try:
+                result = self._request("GET", "/resources")
+                if result is None:
+                    return self._fallback.list_resources()
+                # Normalize: {resources:[...]} or {data:[...]} or [...]
+                raw_list = None
+                if isinstance(result, list):
+                    raw_list = result
+                elif isinstance(result, dict):
+                    for key in ("resources", "data", "items"):
+                        if key in result and isinstance(result[key], list):
+                            raw_list = result[key]
+                            break
+                    if raw_list is None and "resource_id" in result:
+                        raw_list = [result]
+                if raw_list is not None:
+                    self._last_error = None
+                    self._healthy = True
+                    out: list[Resource] = []
+                    for item in raw_list:
+                        try:
+                            if isinstance(item, dict) and "resource_id" in item:
+                                out.append(self._resource_from_dict(item))
+                        except Exception:
+                            continue
+                    # Sync fallback for offline use
+                    # Keep fallback consistent but don't replace if remote empty prematurely
+                    return out
+                return self._fallback.list_resources()
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._healthy = False
+                return self._fallback.list_resources()
 
     def persist_runtime(self, record: RuntimeRecord) -> None:
-        self._not_implemented()
+        with self._lock:
+            self._fallback.persist_runtime(record)
+            try:
+                self._request("POST", "/runtimes", record.to_dict())
+                self._last_error = None
+                self._healthy = True
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._healthy = False
+                if not self._fallback_enabled:
+                    raise
 
     def list_runtimes(self) -> list[RuntimeRecord]:
-        self._not_implemented()
-        return []
+        with self._lock:
+            try:
+                result = self._request("GET", "/runtimes")
+                if result is None:
+                    return self._fallback.list_runtimes()
+                raw_list = None
+                if isinstance(result, list):
+                    raw_list = result
+                elif isinstance(result, dict):
+                    for key in ("runtimes", "records", "data", "items"):
+                        if key in result and isinstance(result[key], list):
+                            raw_list = result[key]
+                            break
+                    if raw_list is None and "entity_id" in result:
+                        raw_list = [result]
+                if raw_list is not None:
+                    self._last_error = None
+                    self._healthy = True
+                    out: list[RuntimeRecord] = []
+                    for item in raw_list:
+                        try:
+                            if isinstance(item, dict) and "entity_id" in item:
+                                out.append(self._record_from_dict(item))
+                        except Exception:
+                            continue
+                    return out
+                return self._fallback.list_runtimes()
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._healthy = False
+                return self._fallback.list_runtimes()
 
     def health(self) -> dict[str, Any]:
-        return {
-            "adapter": "http",
-            "endpoint": self._endpoint,
-            "healthy": False,
-            "error": "HttpRescsAdapter not implemented in v0.2",
-        }
+        with self._lock:
+            try:
+                result = self._request("GET", "/health")
+                if isinstance(result, dict):
+                    # Remote health is authoritative when reachable
+                    healthy = bool(result.get("healthy", True))
+                    self._healthy = healthy
+                    self._last_error = None
+                    # Normalize keys
+                    result.setdefault("adapter", "http")
+                    result.setdefault("endpoint", self._endpoint)
+                    return result
+                # If no JSON, still healthy if request succeeded
+                self._healthy = True
+                self._last_error = None
+                return {
+                    "adapter": "http",
+                    "endpoint": self._endpoint,
+                    "healthy": True,
+                    "resources": len(self._fallback.list_resources()),
+                    "runtimes": len(self._fallback.list_runtimes()),
+                }
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._healthy = False
+                return {
+                    "adapter": "http",
+                    "endpoint": self._endpoint,
+                    "healthy": False,
+                    "error": str(exc),
+                    "fallback_resources": len(self._fallback.list_resources()),
+                    "fallback_runtimes": len(self._fallback.list_runtimes()),
+                }
 
     def clear(self) -> None:
-        self._not_implemented()
+        with self._lock:
+            self._fallback.clear()
+            try:
+                # Try standard clear endpoint, fall back to DELETE collection
+                try:
+                    self._request("POST", "/clear")
+                except Exception:
+                    self._request("DELETE", "/resources")
+                    self._request("DELETE", "/runtimes")
+                self._last_error = None
+                self._healthy = True
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._healthy = False
+                if not self._fallback_enabled:
+                    raise
 
 
 __all__ = [
