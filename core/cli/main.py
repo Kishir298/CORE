@@ -67,6 +67,11 @@ def create_parser() -> argparse.ArgumentParser:
         help="Show C.O.R.E. health status.",
     )
 
+    subparsers.add_parser(
+        "agents",
+        help="Show agent assignments (scheduler).",
+    )
+
     return parser
 
 
@@ -162,6 +167,31 @@ def _print_health(app: CoreApplication) -> None:
         )
 
 
+def _print_agents(app: CoreApplication) -> None:
+    """Print agent scheduler assignments."""
+
+    print("Agents:")
+
+    try:
+        assignments = app.scheduler.list_assignments()
+        profiles = app.scheduler.list_profiles()
+    except Exception as exc:
+        print(f"  Scheduler unavailable: {exc}")
+        return
+
+    print(f"  Profiles: {len(profiles)}")
+    for p in profiles:
+        print(f"    {p.profile_id} | {p.name} | v{p.version} | host={p.host}")
+
+    if not assignments:
+        print("  No assignments.")
+        return
+
+    print(f"  Assignments: {len(assignments)}")
+    for a in assignments:
+        print(f"    {a.device_id} -> {a.agent_id} ({a.profile_id})")
+
+
 def execute(
     args: argparse.Namespace,
     runtime: Runtime,
@@ -172,7 +202,8 @@ def execute(
     .. deprecated::
         Use ``execute_application`` with a ``CoreApplication`` instance.
         This shim is retained for backward compatibility and emits a
-        DeprecationWarning. Future versions will remove it.
+        DeprecationWarning. It will be removed in v0.4.0; migrate to
+        ``execute_application`` before then.
     """
 
     warnings.warn(
@@ -230,6 +261,14 @@ def execute(
         )
         return 0
 
+    if args.command == "agents":
+        print("Agents:")
+        print(
+            "  Agent information requires CoreApplication "
+            "(use: py -m core --config <path> agents)."
+        )
+        return 0
+
     return 0
 
 
@@ -273,6 +312,10 @@ def execute_application(
         _print_health(app)
         return 0
 
+    if args.command == "agents":
+        _print_agents(app)
+        return 0
+
     return 0
 
 
@@ -282,7 +325,7 @@ def run_application(app: CoreApplication) -> int:
     try:
         app.start()
 
-        print("C.O.R.E. v0.2.0")
+        print("C.O.R.E. v0.2.1")
         print("────────────────────────")
         print(
             f"Runtime: {app.state.value.upper()}"
