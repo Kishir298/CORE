@@ -545,10 +545,38 @@ class CoreApplication:
                 )
                 port_int = 0
 
+            # TLS — plaintext legacy fallback preserved
+            tls_enabled = self.configuration.get("communication.tls.enabled", False)
+            if not isinstance(tls_enabled, bool):
+                tls_enabled = bool(tls_enabled) if isinstance(tls_enabled, (str, int)) else False
+            # Also support network.tls.enabled for legacy docs
+            if not tls_enabled:
+                alt = self.configuration.get("network.tls.enabled", None)
+                if isinstance(alt, bool) and alt:
+                    tls_enabled = True
+            tls_cert = self.configuration.get("communication.tls.certfile", None)
+            tls_key = self.configuration.get("communication.tls.keyfile", None)
+            tls_ca = self.configuration.get("communication.tls.cafile", None)
+            tls_require = self.configuration.get("communication.tls.require_client_cert", False)
+            if not isinstance(tls_require, bool):
+                tls_require = False
+            # Normalize paths
+            if tls_cert is not None and not isinstance(tls_cert, str):
+                tls_cert = str(tls_cert)
+            if tls_key is not None and not isinstance(tls_key, str):
+                tls_key = str(tls_key)
+            if tls_ca is not None and not isinstance(tls_ca, str):
+                tls_ca = str(tls_ca)
+
             new_transport = TcpTransport(
                 host=raw_host,
                 port=port_int,
                 on_delivery=self._emit_message_sent,
+                use_tls=bool(tls_enabled),
+                certfile=tls_cert,
+                keyfile=tls_key,
+                cafile=tls_ca,
+                require_client_cert=bool(tls_require),
             )
 
             # Preserve any already-registered endpoints by migrating them.
@@ -557,17 +585,22 @@ class CoreApplication:
             # _initialize_services. Keep existing communication state.
             self.communication = new_transport  # type: ignore[assignment]
             self.routing.set_transport(new_transport)
+            tls_note = " +TLS" if bool(tls_enabled) else ""
             if raw_host == "0.0.0.0":
                 self.logger.warning(
                     f"Communication transport switched to TcpTransport "
-                    f"({raw_host}:{port_int}) for network.enabled=true. "
+                    f"({raw_host}:{port_int}{tls_note}) for network.enabled=true. "
                     "External binding requires Windows firewall exception "
                     "(see docs/windows-firewall.md)."
                 )
             else:
                 self.logger.info(
                     f"Communication transport switched to TcpTransport "
-                    f"({raw_host}:{port_int}) for network.enabled=true."
+                    f"({raw_host}:{port_int}{tls_note}) for network.enabled=true."
+                )
+            if bool(tls_enabled) and not getattr(new_transport, "is_tls", False):
+                self.logger.warning(
+                    "TLS requested but certfile missing or invalid — falling back to plaintext (legacy compatibility)."
                 )
         except ImportError:
             self.logger.warning(

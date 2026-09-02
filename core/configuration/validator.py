@@ -215,6 +215,22 @@ class ConfigurationValidator:
                 if "host" in comm and comm["host"] == "0.0.0.0":
                     # Valid, but note that network.enabled should be true (enforced at runtime)
                     pass
+                # TLS section — plaintext legacy preserved, so only type checks
+                if "tls" in comm:
+                    tls = comm["tls"]
+                    if not isinstance(tls, dict):
+                        errors.append("communication.tls must be a dictionary.")
+                    else:
+                        if "enabled" in tls and not isinstance(tls["enabled"], bool):
+                            errors.append("communication.tls.enabled must be a boolean.")
+                        if "certfile" in tls and not isinstance(tls["certfile"], str):
+                            errors.append("communication.tls.certfile must be a string.")
+                        if "keyfile" in tls and not isinstance(tls["keyfile"], str):
+                            errors.append("communication.tls.keyfile must be a string.")
+                        if "cafile" in tls and not isinstance(tls["cafile"], str):
+                            errors.append("communication.tls.cafile must be a string.")
+                        if "require_client_cert" in tls and not isinstance(tls["require_client_cert"], bool):
+                            errors.append("communication.tls.require_client_cert must be a boolean.")
 
         # Validate security section if present
         if config.has("security"):

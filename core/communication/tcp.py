@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import struct
 import threading
+from pathlib import Path
 from typing import Callable
 
 from core.errors import MessageError
@@ -16,7 +17,7 @@ class TcpTransport(Transport):
     """
     TCP message transport for Windows co-hosted deployment.
 
-    For v0.2.1, TcpTransport provides the same deterministic in-process
+    For v0.3, TcpTransport provides the same deterministic in-process
     delivery as LocalTransport plus TCP framing for external devices
     (phones, watches, R.O.V.E.R.T.). On the 32GB/1TB Windows laptop it
     binds to ``127.0.0.1`` by default to avoid firewall prompts.
@@ -25,8 +26,14 @@ class TcpTransport(Transport):
     exposes the transport on all interfaces and requires a Windows
     firewall exception.
 
+    TLS (v0.3): set ``communication.tls.enabled=true`` with
+    ``communication.tls.certfile/keyfile`` to wrap the TCP listener in
+    TLS. When TLS is disabled or certs are missing the transport falls
+    back to plaintext — legacy clients remain compatible.
+
     Message framing uses length-prefixed JSON via MessageSerializer so
-    identity_id and routing survive the wire.
+    identity_id and routing survive the wire. TLS is transport-level only
+    and does not change the message format.
     """
 
     def __init__(
@@ -34,6 +41,11 @@ class TcpTransport(Transport):
         host: str = "127.0.0.1",
         port: int = 0,
         on_delivery: Callable[[Message], None] | None = None,
+        use_tls: bool = False,
+        certfile: str | Path | None = None,
+        keyfile: str | Path | None = None,
+        cafile: str | Path | None = None,
+        require_client_cert: bool = False,
     ) -> None:
         from threading import RLock
 
@@ -46,6 +58,23 @@ class TcpTransport(Transport):
         if self._port < 0 or self._port > 65535:
             raise ValueError(f"TCP port out of range: {self._port}")
         self._on_delivery = on_delivery
+
+        # TLS state — plaintext fallback preserves legacy compatibility
+        self._use_tls = bool(use_tls)
+        self._certfile = Path(certfile) if certfile else None
+        self._keyfile = Path(keyfile) if keyfile else None
+        self._cafile = Path(cafile) if cafile else None
+        self._require_client_cert = bool(require_client_cert)
+        self._tls_active = False  # becomes True only after successful context build
+        self._ssl_context = None  # type: ignore
+        if self._use_tls:
+            try:
+                self._ssl_context = self._build_ssl_context()
+                self._tls_active = True
+            except Exception:
+                # Defer failure to start — fallback to plaintext with warning
+                self._ssl_context = None
+                self._tls_active = False
 
         self._handlers: dict[str, MessageHandler] = {}
         self._lock = RLock()
@@ -71,22 +100,75 @@ class TcpTransport(Transport):
         """Return whether the transport is bound for external LAN access."""
         return self._host == "0.0.0.0"
 
+    @property
+    def is_tls(self) -> bool:
+        """Return whether TLS is configured and active."""
+        return self._tls_active
+
+    @property
+    def uses_tls(self) -> bool:
+        """Return whether TLS was requested (may be inactive if certs missing)."""
+        return self._use_tls
+
+    def _build_ssl_context(self):  # type: ignore
+        """Build an SSLContext for the TLS listener."""
+        import ssl
+
+        # Validate certfiles exist when TLS is requested
+        if self._certfile is not None and not self._certfile.exists():
+            raise FileNotFoundError(f"TLS certfile not found: {self._certfile}")
+        if self._keyfile is not None and not self._keyfile.exists():
+            raise FileNotFoundError(f"TLS keyfile not found: {self._keyfile}")
+        if self._cafile is not None and not self._cafile.exists():
+            raise FileNotFoundError(f"TLS cafile not found: {self._cafile}")
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        # Modern TLS 1.2+ only; fallback to plaintext on failure is handled by caller
+        try:
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        except Exception:
+            # Fallback for older Python
+            ctx.options |= getattr(ssl, "OP_NO_TLSv1", 0) | getattr(ssl, "OP_NO_TLSv1_1", 0)
+        if self._certfile:
+            ctx.load_cert_chain(
+                certfile=str(self._certfile),
+                keyfile=str(self._keyfile) if self._keyfile else None,
+            )
+        else:
+            # No cert — cannot do TLS; caller will treat as fallback
+            raise FileNotFoundError("TLS certfile not configured for TLS mode")
+
+        if self._require_client_cert and self._cafile:
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            ctx.load_verify_locations(cafile=str(self._cafile))
+        elif self._cafile:
+            ctx.verify_mode = ssl.CERT_OPTIONAL
+            ctx.load_verify_locations(cafile=str(self._cafile))
+
+        return ctx
+
     def start(self) -> None:
         """Start the transport and optional TCP listener."""
 
+        needs_server = False
         with self._lock:
-            if self._active:
-                return
-            self._active = True
-            self._stop_event.clear()
+            if not self._active:
+                self._active = True
+                self._stop_event.clear()
+                needs_server = self._port != 0 and self._server_socket is None
+            else:
+                # Already active — ensure TCP listener is started if requested port
+                # was set post-construction (e.g., config-driven) and server missing.
+                # Preserves legacy plaintext fallback: failures keep local-only mode.
+                needs_server = self._port != 0 and self._server_socket is None
 
-        # Lazily start TCP listener only when a non-zero port is requested
-        # and we are on Windows. Failures fall back to local-only mode.
-        if self._port != 0:
+        # Lazily start TCP listener only when a non-zero port is requested.
+        # Failures fall back to local-only mode.
+        if needs_server:
             try:
                 self._start_server()
             except Exception:
-                # TCP is optional for v0.2; local delivery remains available
+                # TCP is optional; local delivery remains available
                 pass
 
     def stop(self) -> None:
@@ -219,6 +301,22 @@ class TcpTransport(Transport):
         if bind_host == "0.0.0.0":
             # Listening on all interfaces — caller must ensure firewall is configured
             pass
+        # Attempt TLS wrapping — fallback to plaintext on failure preserves legacy compatibility
+        is_tls = False
+        if self._use_tls:
+            if self._ssl_context is None:
+                try:
+                    self._ssl_context = self._build_ssl_context()
+                except Exception:
+                    # Fallback: plaintext listener so legacy clients still connect
+                    self._tls_active = False
+                    self._ssl_context = None
+                else:
+                    self._tls_active = True
+            is_tls = self._tls_active and self._ssl_context is not None
+        else:
+            self._tls_active = False
+
         sock.bind((bind_host, self._port))
         # Update port if ephemeral (0)
         actual_port = sock.getsockname()[1]
@@ -235,6 +333,24 @@ class TcpTransport(Transport):
                     continue
                 except OSError:
                     break
+
+                # TLS: wrap the accepted connection so legacy plaintext clients
+                # are gracefully rejected without crashing the listener; legacy
+                # plaintext fallback listeners (is_tls=False) accept normally.
+                if is_tls and self._ssl_context is not None:
+                    try:
+                        # Wrap with timeout to avoid blocking forever on handshake
+                        conn.settimeout(5.0)
+                        conn = self._ssl_context.wrap_socket(  # type: ignore
+                            conn, server_side=True, do_handshake_on_connect=True
+                        )
+                    except Exception:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                        continue
+
                 threading.Thread(
                     target=self._handle_connection,
                     args=(conn,),
