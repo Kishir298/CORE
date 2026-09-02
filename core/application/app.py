@@ -42,6 +42,13 @@ from core.services import (
     ServiceDispatcher,
     ServiceManager,
 )
+from core.version import (
+    __version__ as CORE_VERSION,
+    LEGACY_VERSIONS,
+    SUPPORTED_VERSIONS,
+    is_legacy,
+    negotiate,
+)
 
 DEFAULT_CONFIG_PATH = Path("config/core.yaml")
 
@@ -329,7 +336,7 @@ class CoreApplication:
             "health": ["status", "overall"],
             "communication": ["status"],
             "events": ["status"],
-            "runtime": ["history", "active", "completed", "get"],
+            "runtime": ["history", "active", "completed", "get", "version"],
             "rescs": ["list", "get", "health", "runtimes"],
             "agent": ["profiles", "assignments", "list", "get", "status"],
         }
@@ -1113,6 +1120,18 @@ class CoreApplication:
             "get",
             lambda entity_id: {
                 "record": self.runtime_history.get(entity_id).to_dict()
+            },
+        )
+
+        self.services.register_handler(
+            "runtime",
+            "version",
+            lambda client_version=None, **kwargs: {
+                "version": CORE_VERSION,
+                "supported": SUPPORTED_VERSIONS,
+                "legacy": LEGACY_VERSIONS,
+                "negotiated": negotiate(client_version),
+                "is_legacy": is_legacy(client_version or CORE_VERSION),
             },
         )
 

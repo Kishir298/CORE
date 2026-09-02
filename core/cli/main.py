@@ -10,6 +10,12 @@ from core.runtime import Runtime
 def create_parser() -> argparse.ArgumentParser:
     """Create the C.O.R.E. command-line interface parser."""
 
+    # Imported lazily to avoid circular import at module load
+    try:
+        from core.version import __version__ as _ver
+    except Exception:
+        _ver = "0.3.0"
+
     parser = argparse.ArgumentParser(
         prog="core",
         description="C.O.R.E. control interface.",
@@ -28,6 +34,11 @@ def create_parser() -> argparse.ArgumentParser:
         type=str,
         default="development",
         help="Configuration environment (default: development).",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"C.O.R.E. v{_ver}",
     )
 
     subparsers = parser.add_subparsers(dest="command")
@@ -70,6 +81,17 @@ def create_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "agents",
         help="Show agent assignments (scheduler).",
+    )
+
+    version_parser = subparsers.add_parser(
+        "version",
+        help="Show C.O.R.E. version and compatibility.",
+    )
+    version_parser.add_argument(
+        "--client",
+        type=str,
+        default=None,
+        help="Client version to negotiate (e.g., 0.2.1, 0.3.0).",
     )
 
     return parser
@@ -192,6 +214,27 @@ def _print_agents(app: CoreApplication) -> None:
         print(f"    {a.device_id} -> {a.agent_id} ({a.profile_id})")
 
 
+def _print_version(app: CoreApplication, client_version: str | None = None) -> None:
+    """Print version and negotiation (preserves legacy 0.2.1 output)."""
+
+    from core.version import CORE_VERSION, LEGACY_VERSIONS, SUPPORTED_VERSIONS, negotiate
+
+    negotiated = negotiate(client_version)
+    print(f"C.O.R.E. v{CORE_VERSION}")
+    print(f"Supported: {', '.join(SUPPORTED_VERSIONS)}")
+    print(f"Legacy: {', '.join(LEGACY_VERSIONS)}")
+    if client_version:
+        print(f"Client: {client_version} → Negotiated: {negotiated}")
+    else:
+        print(f"Negotiated (no client): {negotiated}")
+    # Also show app config version for parity
+    try:
+        cfg_ver = app.configuration.get("core.version", CORE_VERSION) if app.configuration.is_running else CORE_VERSION
+        print(f"Config: {cfg_ver}")
+    except Exception:
+        pass
+
+
 def execute(
     args: argparse.Namespace,
     runtime: Runtime,
@@ -269,6 +312,14 @@ def execute(
         )
         return 0
 
+    if args.command == "version":
+        # Legacy runtime fallback — respect version negotiation even without app
+        from core.version import CORE_VERSION, negotiate
+
+        print(f"C.O.R.E. v{CORE_VERSION}")
+        print(f"Negotiated: {negotiate(getattr(args, 'client', None))}")
+        return 0
+
     return 0
 
 
@@ -316,6 +367,10 @@ def execute_application(
         _print_agents(app)
         return 0
 
+    if args.command == "version":
+        _print_version(app, getattr(args, "client", None))
+        return 0
+
     return 0
 
 
@@ -325,7 +380,9 @@ def run_application(app: CoreApplication) -> int:
     try:
         app.start()
 
-        print("C.O.R.E. v0.2.1")
+        from core.version import __version__ as _run_ver
+
+        print(f"C.O.R.E. v{_run_ver}")
         print("────────────────────────")
         print(
             f"Runtime: {app.state.value.upper()}"
