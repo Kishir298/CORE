@@ -1453,6 +1453,18 @@ class CoreApplication:
         if device.resource_type != "device":
             raise ValueError(f"Resource is not a device: {device_id}")
 
+        # If already assigned and caller forces a different profile, reassign (preserve legacy idempotent otherwise)
+        try:
+            existing_assignment = self.scheduler.get_assignment(device_id)
+            if existing_assignment is not None and profile_id is not None and existing_assignment.profile_id != profile_id:
+                # Explicit profile override — release old assignment first (legacy explicit wins over auto)
+                try:
+                    self._release_agent(device_id=device_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         agent, assignment = self.scheduler.assign(device, profile_id=profile_id)
 
         # Register the agent resource so it is discoverable via resources
@@ -1649,6 +1661,16 @@ class CoreApplication:
             self._consume_security_denied,
         )
 
+        self.events.subscribe(
+            DEVICE_CONNECTED,
+            self._handle_device_connected,
+        )
+
+        self.events.subscribe(
+            DEVICE_DISCONNECTED,
+            self._handle_device_disconnected,
+        )
+
     def _consume_security_denied(self, event) -> None:
         """Log a rejected security boundary crossing."""
 
@@ -1676,6 +1698,112 @@ class CoreApplication:
             f"Service event failure: "
             f"{event.payload.get('service_id')}."
         )
+
+    def _handle_device_connected(self, event) -> None:
+        """
+        Auto-assign a device to a suitable agent on connect.
+
+        Preserves legacy explicit `agent.assign` — this handler is idempotent
+        and only assigns when no assignment exists. Auto-assign is
+        **opt-in** via `agent.auto_assign=true` to keep legacy explicit flow
+        as default (see `config/core.yaml`). Errors are isolated so a
+        missing profile never breaks device registration.
+        """
+        try:
+            # Config gate — legacy explicit flow is default; auto-assign is opt-in
+            auto_enabled = False
+            try:
+                if self.configuration.is_running and self.configuration.has("agent.auto_assign"):
+                    val = self.configuration.get("agent.auto_assign")
+                    if isinstance(val, bool):
+                        auto_enabled = val
+                    elif isinstance(val, str):
+                        auto_enabled = val.strip().lower() == "true"
+            except Exception:
+                auto_enabled = False
+
+            if not auto_enabled:
+                return
+
+            device_id = (event.payload or {}).get("resource_id") or (event.payload or {}).get("device_id")
+            if not device_id:
+                return
+
+            # Idempotent: already assigned → nothing to do (preserves legacy explicit flow)
+            try:
+                self.scheduler.get_assignment(device_id)
+                return
+            except Exception:
+                pass
+
+            # Fetch device resource; if not found, skip
+            try:
+                device = self.resources.get(device_id)
+            except Exception:
+                return
+
+            if device.resource_type != "device":
+                return
+
+            # Optional profile hint from config: agent.auto_assign.profile_id
+            profile_hint = None
+            try:
+                if self.configuration.is_running and self.configuration.has("agent.auto_assign.profile_id"):
+                    hint = self.configuration.get("agent.auto_assign.profile_id")
+                    if isinstance(hint, str) and hint.strip():
+                        profile_hint = hint.strip()
+            except Exception:
+                profile_hint = None
+
+            # Attempt assignment — reuse existing _assign_agent path for consistency
+            try:
+                self._assign_agent(device_id=device_id, profile_id=profile_hint)
+                self.logger.info(f"Auto-assigned agent for device {device_id} (profile={profile_hint or 'auto'})")
+            except Exception as exc:
+                self.logger.warning(f"Auto-assign failed for device {device_id}: {exc}")
+        except Exception:
+            # Never let auto-assign break the event bus
+            pass
+
+    def _handle_device_disconnected(self, event) -> None:
+        """
+        Clean up assignment on disconnect when auto-assign is active.
+
+        This is a no-op if the device was already released via explicit
+        `agent.release` or `resources.remove` (which also releases). Keeps
+        legacy behavior intact: disconnect does not force release if
+        `agent.auto_assign` is false and caller manages lifecycle manually.
+        """
+        try:
+            device_id = (event.payload or {}).get("resource_id") or (event.payload or {}).get("device_id")
+            if not device_id:
+                return
+            # Only auto-cleanup if auto_assign is enabled; otherwise preserve manual lifecycle
+            auto_enabled = False
+            try:
+                if self.configuration.is_running and self.configuration.has("agent.auto_assign"):
+                    val = self.configuration.get("agent.auto_assign")
+                    if isinstance(val, bool):
+                        auto_enabled = val
+                    elif isinstance(val, str):
+                        auto_enabled = val.strip().lower() == "true"
+            except Exception:
+                auto_enabled = False
+            if not auto_enabled:
+                return
+
+            # If assignment exists, release it — _release_agent is idempotent-safe
+            try:
+                self.scheduler.get_assignment(device_id)
+            except Exception:
+                return
+            try:
+                self._release_agent(device_id=device_id)
+                self.logger.info(f"Auto-released agent for device {device_id} on disconnect")
+            except Exception as exc:
+                self.logger.warning(f"Auto-release failed for device {device_id}: {exc}")
+        except Exception:
+            pass
 
     def _register_health_checks(self) -> None:
         checks = {

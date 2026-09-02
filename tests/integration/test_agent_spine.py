@@ -180,3 +180,71 @@ def test_agent_spine_offload_low_capability_vs_generic():
         assert forced.payload["result"]["assignment"]["profile_id"] == "tiviss-compat"
     finally:
         app.stop()
+
+
+def test_agent_spine_auto_assign_opt_in(tmp_path):
+    """Auto-assign is opt-in via agent.auto_assign=true — legacy explicit remains default."""
+    import yaml
+
+    cfg = tmp_path / "core.yaml"
+    cfg.write_text(
+        yaml.safe_dump(
+            {
+                "core": {"name": "C.O.R.E.", "version": "0.2.1"},
+                "environment": "development",
+                "agent": {"auto_assign": True},
+            }
+        )
+    )
+    app = CoreApplication(config_path=cfg)
+    app.start()
+    try:
+        # Register device — auto-assign should create agent without explicit assign
+        dev_msg = Message(
+            source="test",
+            destination="service:resources",
+            message_type="ANY",
+            payload={
+                "operation": "register",
+                "resource_id": "dev-auto-optin",
+                "name": "Auto Optin Phone",
+                "resource_type": "device",
+                "capabilities": ["camera"],
+                "metadata": {"device_type": "phone", "platform": "ios"},
+            },
+        )
+        resp = app.communication.send(dev_msg)
+        assert resp.payload["success"] is True
+        # Auto-assigned agent should exist
+        assert app.scheduler.assignment_count() == 1
+        assert app.scheduler.get_assignment("dev-auto-optin").profile_id in ("asis-offload", "asis-local", "tiviss-compat")
+        # Explicit assign should be idempotent (preserve legacy)
+        explicit = app.communication.send(
+            Message(source="test", destination="service:agent", message_type="ANY", payload={"operation": "assign", "device_id": "dev-auto-optin"})
+        )
+        assert explicit.payload["success"] is True
+        assert explicit.payload["result"]["assignment"]["profile_id"] == app.scheduler.get_assignment("dev-auto-optin").profile_id
+
+        # With auto_assign=false, no auto-assign
+        cfg2 = tmp_path / "core2.yaml"
+        cfg2.write_text(
+            yaml.safe_dump(
+                {
+                    "core": {"name": "C.O.R.E.", "version": "0.2.1"},
+                    "environment": "development",
+                    "agent": {"auto_assign": False},
+                }
+            )
+        )
+        app2 = CoreApplication(config_path=cfg2)
+        app2.start()
+        try:
+            resp2 = app2.communication.send(
+                Message(source="test", destination="service:resources", message_type="ANY", payload={"operation": "register", "resource_id": "dev-no-auto", "name": "No Auto", "resource_type": "device", "capabilities": ["camera"], "metadata": {"device_type": "phone", "platform": "ios"}})
+            )
+            assert resp2.payload["success"] is True
+            assert app2.scheduler.assignment_count() == 0
+        finally:
+            app2.stop()
+    finally:
+        app.stop()
