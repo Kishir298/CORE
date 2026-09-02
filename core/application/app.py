@@ -4,7 +4,11 @@ from core.communication import LocalCommunication
 from core.configuration import ConfigurationManager
 from core.dependencies import DependencyManager
 from core.events import (
+    AGENT_STARTED,
+    AGENT_STOPPED,
     COMPONENT_STARTED,
+    DEVICE_CONNECTED,
+    DEVICE_DISCONNECTED,
     EventBus,
     HEALTH_CHANGED,
     MESSAGE_SENT,
@@ -18,9 +22,15 @@ from core.events import (
 from core.health import HealthMonitor, HealthResult, HealthStatus
 from core.logging import CoreLogger
 from core.organization import OrganizationEngine
+from core.rescs import (
+    FileRescsAdapter,
+    HttpRescsAdapter,
+    InMemoryRescsAdapter,
+    RescsAdapter,
+)
 from core.resources import Resource, ResourceRegistry
 from core.routing import Router
-from core.runtime import Runtime, RuntimeState
+from core.runtime import EntityType, Runtime, RuntimeHistory, RuntimeState
 from core.security import (
     Permission,
     SecurityManager,
@@ -49,6 +59,7 @@ class CoreApplication:
         self,
         config_path: str | Path | None = None,
         environment: str = "development",
+        rescs_adapter: RescsAdapter | None = None,
     ) -> None:
         self._config_path = config_path
         self._environment = environment
@@ -57,6 +68,7 @@ class CoreApplication:
 
         self.configuration = ConfigurationManager()
         self.logger = CoreLogger()
+        self._injected_rescs_adapter = rescs_adapter
 
         self.events = EventBus()
         self.communication = LocalCommunication(
@@ -77,6 +89,10 @@ class CoreApplication:
             policy=self.security_policy,
             emitter=self._emit_service_event,
         )
+        self.runtime_history = RuntimeHistory()
+        # Default to InMemory unless an adapter is injected. Config-driven
+        # selection happens in _apply_rescs_policy after configuration loads.
+        self.rescs: RescsAdapter = rescs_adapter or InMemoryRescsAdapter()
 
         self._initialized = False
         self._disabled_components: set[str] = set()
@@ -173,6 +189,13 @@ class CoreApplication:
         )
 
         self.runtime.register_component(
+            "rescs",
+            self._initialize_rescs,
+            self._shutdown_rescs,
+            dependencies=["configuration", "events"],
+        )
+
+        self.runtime.register_component(
             "dependencies",
             self._initialize_dependencies,
             self._shutdown_dependencies,
@@ -199,6 +222,7 @@ class CoreApplication:
                 "communication",
                 "routing",
                 "health",
+                "rescs",
                 "dependencies",
                 "services",
             ],
@@ -215,6 +239,7 @@ class CoreApplication:
             "communication": ["events", "security"],
             "routing": ["communication"],
             "health": ["events"],
+            "rescs": ["configuration", "events"],
             "dependencies": [],
             "services": ["dependencies", "health"],
         }
@@ -267,6 +292,16 @@ class CoreApplication:
                 version="0.1.0",
                 dependencies=["events"],
             ),
+            Service(
+                service_id="runtime",
+                name="Runtime History",
+                version="0.1.0",
+            ),
+            Service(
+                service_id="rescs",
+                name="R.E.S.C.S. Adapter",
+                version="0.1.0",
+            ),
         ]
 
         for service in internal_services:
@@ -287,6 +322,8 @@ class CoreApplication:
             "health": ["status", "overall"],
             "communication": ["status"],
             "events": ["status"],
+            "runtime": ["history", "active", "completed", "get"],
+            "rescs": ["list", "get", "health", "runtimes"],
         }
 
         write_operations = {
@@ -315,6 +352,7 @@ class CoreApplication:
 
         Configuration is loaded before the runtime starts so enable/disable
         controls are in effect from the very first component initialization.
+        Environment variables (CORE_*) override file values.
         """
 
         self.configuration.start()
@@ -325,6 +363,21 @@ class CoreApplication:
             self.logger.info(
                 "No configuration file found; using defaults."
             )
+            # Still allow environment overrides to drive policy
+            try:
+                env_loaded = self.configuration.load_environment()
+                if env_loaded:
+                    self.logger.info(
+                        f"Configuration overrides from environment: "
+                        + ", ".join(sorted(env_loaded.keys()))
+                    )
+            except Exception:
+                pass
+            self._apply_component_policy()
+            self._deactivate_disabled_components()
+            self._apply_security_policy()
+            self._apply_transport_policy()
+            self._apply_rescs_policy()
             return
 
         self.configuration.load(path, environment=self._environment)
@@ -333,9 +386,22 @@ class CoreApplication:
             f"Configuration loaded: {path}"
         )
 
+        # Environment overrides (CORE_*) take precedence over file values.
+        try:
+            env_loaded = self.configuration.load_environment()
+            if env_loaded:
+                self.logger.info(
+                    f"Configuration overrides from environment: "
+                    + ", ".join(sorted(env_loaded.keys()))
+                )
+        except Exception as exc:
+            self.logger.warning(f"Failed to load environment overrides: {exc}")
+
         self._apply_component_policy()
         self._deactivate_disabled_components()
         self._apply_security_policy()
+        self._apply_transport_policy()
+        self._apply_rescs_policy()
 
     def _apply_security_policy(self) -> None:
         """
@@ -343,7 +409,8 @@ class CoreApplication:
 
         Enforcement is opt-in: it is active only when explicitly enabled so
         the internal trusted routing spine is unchanged until a security
-        boundary is configured.
+        boundary is configured. The authentication provider is also
+        config-driven (existence|token) for Windows co-hosted deployments.
         """
 
         enabled = self.configuration.get(
@@ -352,6 +419,199 @@ class CoreApplication:
         )
 
         self.security_policy.set_enforced(bool(enabled))
+
+        # Configure authentication provider if specified.
+        provider_name = self.configuration.get("security.provider", None)
+        if provider_name is None:
+            # Also support security.authentication.provider for legacy docs
+            provider_name = self.configuration.get(
+                "security.authentication.provider",
+                None,
+            )
+
+        if isinstance(provider_name, str):
+            normalized = provider_name.strip().lower()
+            try:
+                if normalized in ("token", "credential", "bearer"):
+                    from core.security.provider import (
+                        TokenAuthenticationProvider,
+                    )
+
+                    self.security.set_provider(TokenAuthenticationProvider())
+                    self.logger.info(
+                        "Security provider switched to TokenAuthenticationProvider."
+                    )
+                elif normalized in ("existence", "allow", "default", "none"):
+                    from core.security.provider import (
+                        ExistenceAuthenticationProvider,
+                    )
+
+                    self.security.set_provider(
+                        ExistenceAuthenticationProvider()
+                    )
+            except Exception as exc:
+                self.logger.warning(
+                    f"Failed to configure security provider '{provider_name}': {exc}"
+                )
+
+    def _apply_transport_policy(self) -> None:
+        """
+        Select the communication transport based on configuration.
+
+        Defaults to LocalTransport. When network.enabled is true and
+        communication.transport requests an external transport (tcp/network/
+        external), TcpTransport is instantiated on Windows with localhost
+        binding. The selection is config-driven and transport-agnostic for
+        routing/service layers.
+        """
+
+        if not self.configuration.is_running:
+            return
+
+        # If communication is disabled, no transport swap is needed.
+        if "communication" in self._disabled_components:
+            return
+
+        transport_name = self.configuration.get(
+            "communication.transport",
+            "local",
+        )
+        network_enabled = self.configuration.get(
+            "network.enabled",
+            False,
+        )
+
+        # Normalize transport name
+        if isinstance(transport_name, str):
+            transport_name = transport_name.strip().lower()
+        else:
+            transport_name = "local"
+
+        wants_external = network_enabled is True and transport_name in (
+            "tcp",
+            "network",
+            "external",
+            "loopback",
+        )
+
+        if not wants_external:
+            # LocalTransport is already the default; ensure router points to it.
+            if transport_name not in ("local", "memory", "inprocess", ""):
+                self.logger.warning(
+                    f"Unknown communication.transport '{transport_name}'; using local."
+                )
+            return
+
+        # Attempt to switch to TcpTransport for Windows co-hosted deployment.
+        try:
+            from core.communication.tcp import TcpTransport  # type: ignore
+
+            host = self.configuration.get("communication.host", "127.0.0.1")
+            port = self.configuration.get("communication.port", 0)
+
+            # Coerce port to int if needed
+            if isinstance(port, str):
+                try:
+                    port = int(port)
+                except ValueError:
+                    port = 0
+
+            new_transport = TcpTransport(
+                host=str(host) if host else "127.0.0.1",
+                port=int(port) if isinstance(port, int) else 0,
+                on_delivery=self._emit_message_sent,
+            )
+
+            # Preserve any already-registered endpoints by migrating them.
+            # For v0.2, just swap the reference; endpoints will be
+            # re-registered via _register_service_endpoints during
+            # _initialize_services. Keep existing communication state.
+            self.communication = new_transport  # type: ignore[assignment]
+            self.routing.set_transport(new_transport)
+            self.logger.info(
+                f"Communication transport switched to TcpTransport "
+                f"({host}:{port}) for network.enabled=true."
+            )
+        except ImportError:
+            self.logger.warning(
+                "TcpTransport not available; falling back to LocalTransport."
+            )
+        except Exception as exc:
+            self.logger.warning(
+                f"Failed to switch to TcpTransport ({exc}); using LocalTransport."
+            )
+
+    def _apply_rescs_policy(self) -> None:
+        """
+        Select the R.E.S.C.S. adapter based on configuration.
+
+        For Windows laptop co-hosting, supports:
+        - memory (default, deterministic)
+        - file   (persistent JSON at var/rescs.json or custom rescs.path)
+        - http   (stub, delegates to R.E.S.C.S. HTTP when available)
+        """
+
+        if not self.configuration.is_running:
+            return
+
+        # Injected adapter takes precedence unless config overrides explicitly.
+        # If an adapter was injected programmatically, respect it unless
+        # configuration explicitly sets rescs.adapter.
+        if self._injected_rescs_adapter is not None and not self.configuration.has(
+            "rescs.adapter"
+        ):
+            return
+
+        if self.configuration.has("rescs.enabled"):
+            enabled = self.configuration.get("rescs.enabled")
+            if isinstance(enabled, bool) and not enabled:
+                # Keep current adapter but log disabled
+                self.logger.info("R.E.S.C.S. persistence disabled by configuration.")
+                return
+
+        adapter_name = self.configuration.get("rescs.adapter", "memory")
+        if not isinstance(adapter_name, str):
+            adapter_name = "memory"
+        adapter_name = adapter_name.strip().lower()
+
+        try:
+            if adapter_name in ("memory", "inmemory", "default"):
+                # Only swap if not already InMemory
+                if not isinstance(self.rescs, InMemoryRescsAdapter):
+                    self.rescs = InMemoryRescsAdapter()
+                    self.logger.info("R.E.S.C.S. adapter switched to InMemory.")
+            elif adapter_name in ("file", "json", "persistent"):
+                rescs_path = self.configuration.get("rescs.path", None)
+                if rescs_path is None:
+                    rescs_path = self.configuration.get("rescs.file", None)
+                # Windows-friendly default
+                target_path = Path(str(rescs_path)) if rescs_path else Path("var") / "rescs.json"
+                self.rescs = FileRescsAdapter(path=target_path)
+                self.logger.info(
+                    f"R.E.S.C.S. adapter switched to File ({target_path})."
+                )
+            elif adapter_name in ("http", "remote", "network"):
+                endpoint = self.configuration.get(
+                    "rescs.endpoint", "http://localhost:8081"
+                )
+                if not isinstance(endpoint, str):
+                    endpoint = "http://localhost:8081"
+                self.rescs = HttpRescsAdapter(endpoint=endpoint)
+                self.logger.info(
+                    f"R.E.S.C.S. adapter switched to Http ({endpoint})."
+                )
+            else:
+                self.logger.warning(
+                    f"Unknown rescs.adapter '{adapter_name}'; using memory."
+                )
+        except Exception as exc:
+            self.logger.warning(
+                f"Failed to switch R.E.S.C.S. adapter to '{adapter_name}': {exc}; using memory."
+            )
+            try:
+                self.rescs = InMemoryRescsAdapter()
+            except Exception:
+                pass
 
     def _apply_component_policy(self) -> None:
         """
@@ -484,10 +744,34 @@ class CoreApplication:
         )
 
     def _initialize_resources(self) -> None:
-        """Activate the resource infrastructure."""
+        """
+        Activate the resource infrastructure.
+
+        Resources are intentionally empty at startup — they are populated
+        via the RESOURCES.REGISTER service or the ResourceRegistry API.
+        This explicit no-op ensures lifecycle symmetry with
+        _shutdown_resources which clears on stop, while preserving the
+        registry→organization attachment across restarts.
+        """
+
+        self.logger.info("Resources ready — registry empty, awaiting registrations.")
 
     def _initialize_organization(self) -> None:
-        """Activate the organization infrastructure."""
+        """
+        Activate the organization infrastructure.
+
+        Organization entries are derived from registered resources via
+        ResourceRegistry auto-categorization. No pre-population is required;
+        entries are created on ResourceRegistry.register and cleared on
+        _shutdown_organization. Attachment to the registry survives restarts.
+        """
+
+        # Ensure attachment survives any prior clear/restart cycle.
+        try:
+            self.resources.attach_organization(self.organization)
+        except Exception:
+            pass
+        self.logger.info("Organization ready — awaiting resource categorizations.")
 
     def _initialize_events(self) -> None:
         """Activate the event subsystem and attach event consumers."""
@@ -511,6 +795,18 @@ class CoreApplication:
 
         self.health.start()
         self._register_health_checks()
+
+    def _initialize_rescs(self) -> None:
+        """Activate the R.E.S.C.S. persistence adapter."""
+
+        # Adapter selection already happened in _apply_rescs_policy during
+        # _load_configuration. Here we just verify health and log.
+        try:
+            health = self.rescs.health()
+            adapter = health.get("adapter", "unknown")
+            self.logger.info(f"R.E.S.C.S. adapter ready: {adapter}")
+        except Exception as exc:
+            self.logger.warning(f"R.E.S.C.S. health check failed: {exc}")
 
     def _initialize_dependencies(self) -> None:
         """Mark the dependency registry as active."""
@@ -594,7 +890,7 @@ class CoreApplication:
             "update",
             lambda resource_id, **kwargs: {
                 "resource": self._resource_snapshot(
-                    self.resources.update(resource_id, **kwargs)
+                    self._update_resource(resource_id, **kwargs)
                 )
             },
         )
@@ -701,6 +997,82 @@ class CoreApplication:
             },
         )
 
+        self.services.register_handler(
+            "runtime",
+            "history",
+            lambda: {
+                "records": [
+                    r.to_dict() for r in self.runtime_history.list_all()
+                ]
+            },
+        )
+
+        self.services.register_handler(
+            "runtime",
+            "active",
+            lambda: {
+                "records": [
+                    r.to_dict() for r in self.runtime_history.list_active()
+                ]
+            },
+        )
+
+        self.services.register_handler(
+            "runtime",
+            "completed",
+            lambda: {
+                "records": [
+                    r.to_dict() for r in self.runtime_history.list_completed()
+                ]
+            },
+        )
+
+        self.services.register_handler(
+            "runtime",
+            "get",
+            lambda entity_id: {
+                "record": self.runtime_history.get(entity_id).to_dict()
+            },
+        )
+
+        self.services.register_handler(
+            "rescs",
+            "list",
+            lambda: {
+                "resources": [
+                    r.to_dict() for r in self.rescs.list_resources()
+                ]
+            },
+        )
+
+        self.services.register_handler(
+            "rescs",
+            "get",
+            lambda resource_id: {
+                "resource": (
+                    self.rescs.fetch_resource(resource_id).to_dict()
+                    if self.rescs.fetch_resource(resource_id) is not None
+                    else None
+                )
+            },
+        )
+
+        self.services.register_handler(
+            "rescs",
+            "health",
+            lambda: self.rescs.health(),
+        )
+
+        self.services.register_handler(
+            "rescs",
+            "runtimes",
+            lambda: {
+                "records": [
+                    r.to_dict() for r in self.rescs.list_runtimes()
+                ]
+            },
+        )
+
     def _register_service_endpoints(self) -> None:
         """Register transport endpoints that dispatch to services."""
 
@@ -749,6 +1121,7 @@ class CoreApplication:
         self.resources.register(resource)
 
         self._emit_resource_event(RESOURCE_REGISTERED, resource)
+        self._track_resource_start(resource)
 
         return {"resource": self._resource_snapshot(resource)}
 
@@ -758,8 +1131,167 @@ class CoreApplication:
         resource = self.resources.unregister(resource_id)
 
         self._emit_resource_event(RESOURCE_REMOVED, resource)
+        self._track_resource_end(resource)
 
         return {"removed": resource.resource_id}
+
+    def _update_resource(self, resource_id: str, **kwargs) -> Resource:
+        """Update a resource and track status changes."""
+
+        resource = self.resources.update(resource_id, **kwargs)
+
+        # If status changed, treat as potential runtime status transition
+        if "status" in kwargs:
+            self._emit_resource_event(RESOURCE_REGISTERED, resource)
+            # For device/agent, maintain runtime history on status
+            if resource.resource_type == "device":
+                if kwargs["status"] in ("online", "connected", "running"):
+                    # Ensure tracking is active
+                    try:
+                        self.runtime_history.get(resource.resource_id)
+                    except KeyError:
+                        self._track_resource_start(resource)
+                elif kwargs["status"] in ("offline", "disconnected", "stopped"):
+                    self._track_resource_end(resource)
+            elif resource.resource_type == "agent":
+                if kwargs["status"] == "running":
+                    try:
+                        self.runtime_history.get(resource.resource_id)
+                    except KeyError:
+                        self._track_resource_start(resource)
+                elif kwargs["status"] in ("stopped", "failed"):
+                    self._track_resource_end(resource)
+
+        return resource
+
+    def _track_resource_start(self, resource: Resource) -> None:
+        """Start runtime history tracking for device/agent resources."""
+
+        try:
+            if resource.resource_type == "device":
+                record = self.runtime_history.start(
+                    entity_id=resource.resource_id,
+                    entity_type=EntityType.DEVICE,
+                    metadata={
+                        "name": resource.name,
+                        "status": resource.status,
+                        "capabilities": list(resource.capabilities),
+                        **dict(resource.metadata),
+                    },
+                )
+                if self.events.is_running:
+                    self.events.emit(
+                        event_type=DEVICE_CONNECTED,
+                        source="resources",
+                        payload={
+                            "resource_id": resource.resource_id,
+                            "device_type": resource.metadata.get(
+                                "device_type", resource.resource_type
+                            ),
+                        },
+                    )
+                self._persist_to_rescs(resource, record)
+            elif resource.resource_type == "agent":
+                record = self.runtime_history.start(
+                    entity_id=resource.resource_id,
+                    entity_type=EntityType.AGENT,
+                    metadata={
+                        "name": resource.name,
+                        "status": resource.status,
+                        **dict(resource.metadata),
+                    },
+                )
+                if self.events.is_running:
+                    self.events.emit(
+                        event_type=AGENT_STARTED,
+                        source="resources",
+                        payload={
+                            "resource_id": resource.resource_id,
+                            "agent_type": resource.metadata.get(
+                                "agent_type", "local"
+                            ),
+                        },
+                    )
+                self._persist_to_rescs(resource, record)
+            else:
+                # Generic service/connection tracking
+                record = self.runtime_history.start(
+                    entity_id=resource.resource_id,
+                    entity_type=resource.resource_type,
+                    metadata={
+                        "name": resource.name,
+                        "status": resource.status,
+                        **dict(resource.metadata),
+                    },
+                )
+                self._persist_to_rescs(resource, record)
+        except Exception:
+            # History tracking must never break resource registration
+            pass
+
+    def _track_resource_end(self, resource: Resource) -> None:
+        """Complete runtime history tracking for a resource."""
+
+        try:
+            # Attempt to end history; ignore if no record
+            record = None
+            try:
+                record = self.runtime_history.end(
+                    entity_id=resource.resource_id,
+                    metadata={
+                        "name": resource.name,
+                        "final_status": resource.status,
+                    },
+                )
+            except KeyError:
+                pass
+
+            # Persist updated runtime record and resource deletion
+            try:
+                # For delete, still attempt to persist final state then remove
+                if record is not None:
+                    try:
+                        self.rescs.persist_runtime(record)
+                    except Exception as exc:
+                        self.logger.warning(
+                            f"R.E.S.C.S. runtime persist failed: {exc}"
+                        )
+                try:
+                    self.rescs.delete_resource(resource.resource_id)
+                except Exception as exc:
+                    self.logger.warning(
+                        f"R.E.S.C.S. resource delete failed: {exc}"
+                    )
+            except Exception:
+                pass
+
+            if resource.resource_type == "device" and self.events.is_running:
+                self.events.emit(
+                    event_type=DEVICE_DISCONNECTED,
+                    source="resources",
+                    payload={"resource_id": resource.resource_id},
+                )
+            elif resource.resource_type == "agent" and self.events.is_running:
+                self.events.emit(
+                    event_type=AGENT_STOPPED,
+                    source="resources",
+                    payload={"resource_id": resource.resource_id},
+                )
+        except Exception:
+            pass
+
+    def _persist_to_rescs(self, resource: Resource, record) -> None:
+        """Persist resource and runtime record to R.E.S.C.S. with isolation."""
+
+        try:
+            self.rescs.persist_resource(resource)
+        except Exception as exc:
+            self.logger.warning(f"R.E.S.C.S. persist resource failed: {exc}")
+
+        try:
+            self.rescs.persist_runtime(record)
+        except Exception as exc:
+            self.logger.warning(f"R.E.S.C.S. persist runtime failed: {exc}")
 
     @staticmethod
     def _resource_snapshot(resource: Resource) -> dict:
@@ -924,6 +1456,7 @@ class CoreApplication:
             "communication": self._check_communication,
             "routing": self._check_routing,
             "health": self._check_health,
+            "rescs": self._check_rescs,
             "services": self._check_services,
         }
 
@@ -1082,6 +1615,27 @@ class CoreApplication:
             ),
         )
 
+    def _check_rescs(self) -> HealthResult:
+        try:
+            health = self.rescs.health()
+            healthy = bool(health.get("healthy", True))
+            adapter = health.get("adapter", "unknown")
+            return HealthResult(
+                component_id="rescs",
+                status=(
+                    HealthStatus.HEALTHY
+                    if healthy
+                    else HealthStatus.DEGRADED
+                ),
+                message=f"R.E.S.C.S. adapter={adapter}; healthy={healthy}",
+            )
+        except Exception as exc:
+            return HealthResult(
+                component_id="rescs",
+                status=HealthStatus.UNHEALTHY,
+                message=f"R.E.S.C.S. health failed: {exc}",
+            )
+
     def _shutdown_configuration(self) -> None:
         """Shutdown configuration infrastructure."""
 
@@ -1115,6 +1669,15 @@ class CoreApplication:
     def _shutdown_health(self) -> None:
         self.health.stop()
         self.health.clear()
+
+    def _shutdown_rescs(self) -> None:
+        # File adapter persists across stop; in-memory is cleared.
+        # Keep file persistence to survive Windows restarts.
+        if isinstance(self.rescs, InMemoryRescsAdapter):
+            try:
+                self.rescs.clear()
+            except Exception:
+                pass
 
     def _shutdown_dependencies(self) -> None:
         self.dependencies.clear()
