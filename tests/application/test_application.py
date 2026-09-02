@@ -206,6 +206,7 @@ def test_application_services_are_registered():
         "health",
         "runtime",
         "rescs",
+        "agent",
     }
 
     for service_id in expected_service_ids:

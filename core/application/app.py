@@ -31,6 +31,7 @@ from core.rescs import (
 from core.resources import Resource, ResourceRegistry
 from core.routing import Router
 from core.runtime import EntityType, Runtime, RuntimeHistory, RuntimeState
+from core.scheduler import AgentScheduler
 from core.security import (
     Permission,
     SecurityManager,
@@ -90,6 +91,7 @@ class CoreApplication:
             emitter=self._emit_service_event,
         )
         self.runtime_history = RuntimeHistory()
+        self.scheduler = AgentScheduler()
         # Default to InMemory unless an adapter is injected. Config-driven
         # selection happens in _apply_rescs_policy after configuration loads.
         self.rescs: RescsAdapter = rescs_adapter or InMemoryRescsAdapter()
@@ -302,6 +304,11 @@ class CoreApplication:
                 name="R.E.S.C.S. Adapter",
                 version="0.1.0",
             ),
+            Service(
+                service_id="agent",
+                name="Agent Scheduler",
+                version="0.1.0",
+            ),
         ]
 
         for service in internal_services:
@@ -324,10 +331,12 @@ class CoreApplication:
             "events": ["status"],
             "runtime": ["history", "active", "completed", "get"],
             "rescs": ["list", "get", "health", "runtimes"],
+            "agent": ["profiles", "assignments", "list", "get", "status"],
         }
 
         write_operations = {
             "resources": ["register", "update", "remove"],
+            "agent": ["assign", "release"],
         }
 
         for service_id, operations in read_operations.items():
@@ -1112,6 +1121,66 @@ class CoreApplication:
             },
         )
 
+        # Agent scheduler — capability-driven assignment for low-capability devices
+        self.services.register_handler(
+            "agent",
+            "profiles",
+            lambda: {
+                "profiles": [
+                    p.to_dict() for p in self.scheduler.list_profiles()
+                ]
+            },
+        )
+        self.services.register_handler(
+            "agent",
+            "assignments",
+            lambda: {
+                "assignments": [
+                    a.to_dict() for a in self.scheduler.list_assignments()
+                ]
+            },
+        )
+        self.services.register_handler(
+            "agent",
+            "list",
+            lambda: {
+                "agents": [
+                    r.to_dict() for r in self.scheduler.list_agents()
+                ]
+            },
+        )
+        self.services.register_handler(
+            "agent",
+            "get",
+            lambda device_id: {
+                "assignment": self.scheduler.get_assignment(device_id).to_dict(),
+                "agent": self.scheduler.get_agent(
+                    self.scheduler.get_assignment(device_id).agent_id
+                ).to_dict(),
+            },
+        )
+        self.services.register_handler(
+            "agent",
+            "status",
+            lambda: {
+                "profiles": len(self.scheduler.list_profiles()),
+                "assignments": self.scheduler.assignment_count(),
+                "agents": len(self.scheduler.list_agents()),
+            },
+        )
+        self.services.register_handler(
+            "agent",
+            "assign",
+            lambda device_id, profile_id=None, **kwargs: self._assign_agent(
+                device_id=device_id, profile_id=profile_id
+            ),
+        )
+        self.services.register_handler(
+            "agent",
+            "release",
+            lambda device_id: self._release_agent(device_id=device_id),
+        )
+
     def _register_service_endpoints(self) -> None:
         """Register transport endpoints that dispatch to services."""
 
@@ -1166,6 +1235,17 @@ class CoreApplication:
 
     def _remove_resource(self, resource_id: str) -> dict:
         """Remove a resource and publish a removal event."""
+
+        # If a device with an agent assignment is removed, release the agent first
+        try:
+            candidate = self.resources.get(resource_id)
+            if candidate.resource_type == "device":
+                try:
+                    self._release_agent(device_id=resource_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         resource = self.resources.unregister(resource_id)
 
@@ -1332,6 +1412,87 @@ class CoreApplication:
         except Exception as exc:
             self.logger.warning(f"R.E.S.C.S. persist runtime failed: {exc}")
 
+    def _assign_agent(self, device_id: str, profile_id: str | None = None) -> dict:
+        """Assign a device to a suitable agent via the scheduler."""
+
+        device = self.resources.get(device_id)
+
+        if device.resource_type != "device":
+            raise ValueError(f"Resource is not a device: {device_id}")
+
+        agent, assignment = self.scheduler.assign(device, profile_id=profile_id)
+
+        # Register the agent resource so it is discoverable via resources
+        try:
+            self.resources.register(agent)
+            self._emit_resource_event(RESOURCE_REGISTERED, agent)
+            self._track_resource_start(agent)
+        except Exception:
+            # Already registered — update in place
+            try:
+                existing = self.resources.get(agent.resource_id)
+                existing.status = agent.status
+                existing.metadata = dict(agent.metadata)
+                existing.capabilities = list(agent.capabilities)
+            except Exception:
+                pass
+
+        # Record assignment on device metadata
+        try:
+            device.metadata["assigned_agent"] = agent.resource_id
+        except Exception:
+            pass
+
+        if self.events.is_running:
+            self.events.emit(
+                event_type=AGENT_STARTED,
+                source="agent",
+                payload={
+                    "device_id": device_id,
+                    "agent_id": agent.resource_id,
+                    "profile_id": assignment.profile_id,
+                },
+            )
+
+        return {
+            "agent": self._resource_snapshot(agent),
+            "assignment": assignment.to_dict(),
+        }
+
+    def _release_agent(self, device_id: str) -> dict:
+        """Release the agent assigned to a device."""
+
+        assignment = self.scheduler.release(device_id)
+
+        # Unregister the agent resource
+        try:
+            agent_res = self.resources.get(assignment.agent_id)
+            self.resources.unregister(assignment.agent_id)
+            self._emit_resource_event(RESOURCE_REMOVED, agent_res)
+            self._track_resource_end(agent_res)
+        except Exception:
+            pass
+
+        # Clear assignment from device
+        try:
+            device = self.resources.get(device_id)
+            device.metadata.pop("assigned_agent", None)
+        except Exception:
+            pass
+
+        if self.events.is_running:
+            self.events.emit(
+                event_type=AGENT_STOPPED,
+                source="agent",
+                payload={
+                    "device_id": device_id,
+                    "agent_id": assignment.agent_id,
+                    "profile_id": assignment.profile_id,
+                },
+            )
+
+        return {"released": assignment.to_dict()}
+
     @staticmethod
     def _resource_snapshot(resource: Resource) -> dict:
         """Return a serializable snapshot of a resource."""
@@ -1497,6 +1658,7 @@ class CoreApplication:
             "health": self._check_health,
             "rescs": self._check_rescs,
             "services": self._check_services,
+            "agent": self._check_agent,
         }
 
         for component_id, check in checks.items():
@@ -1675,6 +1837,22 @@ class CoreApplication:
                 message=f"R.E.S.C.S. health failed: {exc}",
             )
 
+    def _check_agent(self) -> HealthResult:
+        try:
+            profiles = self.scheduler.count()
+            assignments = self.scheduler.assignment_count()
+            return HealthResult(
+                component_id="agent",
+                status=HealthStatus.HEALTHY,
+                message=f"Agent scheduler: {profiles} profiles, {assignments} assignments.",
+            )
+        except Exception as exc:
+            return HealthResult(
+                component_id="agent",
+                status=HealthStatus.UNHEALTHY,
+                message=f"Agent scheduler failed: {exc}",
+            )
+
     def _shutdown_configuration(self) -> None:
         """Shutdown configuration infrastructure."""
 
@@ -1688,6 +1866,10 @@ class CoreApplication:
         self.security.clear()
 
     def _shutdown_resources(self) -> None:
+        try:
+            self.scheduler.clear()
+        except Exception:
+            pass
         self.resources.clear()
 
     def _shutdown_organization(self) -> None:

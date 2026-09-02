@@ -71,7 +71,7 @@ def test_application_initializes_all_components_in_order(app):
 
 
 def test_application_starts_all_internal_services(app):
-    assert app.services.count() == 8
+    assert app.services.count() == 9
 
     for service in app.services.list():
         assert service.status == ServiceStatus.RUNNING
