@@ -58,6 +58,7 @@ def test_application_initializes_all_components_in_order(app):
         "communication",
         "routing",
         "health",
+        "rescs",
         "dependencies",
         "services",
         "core",
@@ -70,7 +71,7 @@ def test_application_initializes_all_components_in_order(app):
 
 
 def test_application_starts_all_internal_services(app):
-    assert app.services.count() == 6
+    assert app.services.count() == 8
 
     for service in app.services.list():
         assert service.status == ServiceStatus.RUNNING
@@ -105,6 +106,7 @@ def test_application_shutdown_occurs_in_reverse_dependency_order(app):
         "communication",
         "routing",
         "health",
+        "rescs",
         "dependencies",
         "services",
         "core",

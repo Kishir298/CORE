@@ -49,3 +49,10 @@ dist/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# C.O.R.E. runtime persistence (Windows host)
+var/
+*.tmp
+
+# Tool backups
+opencode.json.backup

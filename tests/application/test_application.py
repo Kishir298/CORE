@@ -24,6 +24,7 @@ def test_application_registers_runtime_components():
         "communication",
         "routing",
         "health",
+        "rescs",
         "dependencies",
         "services",
         "core",
@@ -93,6 +94,7 @@ def test_application_core_depends_on_all_subsystems():
         "communication",
         "routing",
         "health",
+        "rescs",
         "dependencies",
         "services",
     }
@@ -186,6 +188,7 @@ def test_application_dependency_manager_is_configured():
         "communication",
         "routing",
         "health",
+        "rescs",
         "dependencies",
         "services",
     }
@@ -201,6 +204,8 @@ def test_application_services_are_registered():
         "organization",
         "routing",
         "health",
+        "runtime",
+        "rescs",
     }
 
     for service_id in expected_service_ids:
