@@ -1,8 +1,10 @@
 # C.O.R.E. — Communication, Organization and Resource Engine
 
-**Version:** `0.2.1` · **Host:** Windows 11 (Intel Core Ultra 7 · 32 GB RAM · 1 TB) co-hosting **C.O.R.E.** and **R.E.S.C.S.** · **Python:** `>=3.10` (tested on `3.14.6` via `py` launcher, `3.14.7` on Windows)
+**Version:** `0.3.0` · **Host:** Windows 11 (Intel Core Ultra 7 · 32 GB RAM · 1 TB) co-hosting **C.O.R.E.** and **R.E.S.C.S.** · **Python:** `>=3.10` (tested on `3.14.6` via `py` launcher, `3.14.7` on Windows)
 
-C.O.R.E. is the lifecycle-aware, transport-agnostic orchestration spine for the R.I.S.A.R.M.S. platform. It owns runtime graphs, communication, routing, services, resources, organization, events, health, security, R.E.S.C.S. persistence and agent scheduling on a single Windows laptop that may offload agent execution for low-capability devices (phones, watches, R.O.V.E.R.T.).
+C.O.R.E. is the lifecycle-aware, transport-agnostic orchestration spine for the R.I.S.A.R.M.S. platform. It owns runtime graphs, communication, routing, services, resources, organization, events, health, security, R.E.S.C.S. persistence and agent scheduling on a single Windows laptop that may offload agent execution for low-capability devices (phones, watches, R.O.V.E.R.T.). **Legacy versions `0.2.0`/`0.2.1` remain supported** via negotiation (`core/version.py:1`, `runtime.version` service, `CORE_VERSION`).
+
+> **Legacy preservation:** All `0.2.x` clients (plaintext `LocalTransport`/`TcpTransport` localhost, explicit `agent.assign`, `InMemory`/`File` RESCS) continue to work. `0.3.0` adds TLS + auto-assign + Http fallback as **opt-in higher versions** — no breaking change.
 
 ## Quick Start (Windows PowerShell 5.1)
 
