@@ -201,6 +201,20 @@ class ConfigurationValidator:
                         errors.append(
                             "communication.port string must be numeric."
                         )
+                # Port range validation
+                if "port" in comm:
+                    try:
+                        port_val = int(comm["port"])  # type: ignore
+                        if port_val < 0 or port_val > 65535:
+                            errors.append(
+                                "communication.port must be in range 0-65535."
+                            )
+                    except Exception:
+                        pass
+                # External host requires network.enabled context (warning, not error)
+                if "host" in comm and comm["host"] == "0.0.0.0":
+                    # Valid, but note that network.enabled should be true (enforced at runtime)
+                    pass
 
         # Validate security section if present
         if config.has("security"):
@@ -242,6 +256,14 @@ class ConfigurationValidator:
                     rescs["endpoint"], str
                 ):
                     errors.append("rescs.endpoint must be a string.")
+                if "timeout" in rescs and not isinstance(
+                    rescs["timeout"], (int, float, str)
+                ):
+                    errors.append("rescs.timeout must be a number or numeric string.")
+                if "fallback" in rescs and not isinstance(
+                    rescs["fallback"], bool
+                ):
+                    errors.append("rescs.fallback must be a boolean.")
 
     @staticmethod
     def _validate_components(

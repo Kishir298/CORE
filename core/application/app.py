@@ -460,9 +460,12 @@ class CoreApplication:
 
         Defaults to LocalTransport. When network.enabled is true and
         communication.transport requests an external transport (tcp/network/
-        external), TcpTransport is instantiated on Windows with localhost
-        binding. The selection is config-driven and transport-agnostic for
-        routing/service layers.
+        external), TcpTransport is instantiated on Windows.
+
+        External LAN binding: set ``communication.host=0.0.0.0`` with
+        ``network.enabled=true`` to listen on all interfaces. This
+        requires a Windows firewall exception (see docs/windows-firewall.md).
+        Loopback (127.0.0.1) remains the safe default.
         """
 
         if not self.configuration.is_running:
@@ -516,9 +519,26 @@ class CoreApplication:
                 except ValueError:
                     port = 0
 
+            # Guard 0.0.0.0 without network.enabled — downgrade to loopback
+            raw_host = str(host).strip() if host else "127.0.0.1"
+            if raw_host == "0.0.0.0" and network_enabled is not True:
+                self.logger.warning(
+                    "communication.host=0.0.0.0 requires network.enabled=true; "
+                    "falling back to 127.0.0.1 for safety."
+                )
+                raw_host = "127.0.0.1"
+
+            # Validate port range
+            port_int = int(port) if isinstance(port, int) else 0
+            if port_int < 0 or port_int > 65535:
+                self.logger.warning(
+                    f"communication.port {port_int} out of range (0-65535); using 0."
+                )
+                port_int = 0
+
             new_transport = TcpTransport(
-                host=str(host) if host else "127.0.0.1",
-                port=int(port) if isinstance(port, int) else 0,
+                host=raw_host,
+                port=port_int,
                 on_delivery=self._emit_message_sent,
             )
 
@@ -528,10 +548,18 @@ class CoreApplication:
             # _initialize_services. Keep existing communication state.
             self.communication = new_transport  # type: ignore[assignment]
             self.routing.set_transport(new_transport)
-            self.logger.info(
-                f"Communication transport switched to TcpTransport "
-                f"({host}:{port}) for network.enabled=true."
-            )
+            if raw_host == "0.0.0.0":
+                self.logger.warning(
+                    f"Communication transport switched to TcpTransport "
+                    f"({raw_host}:{port_int}) for network.enabled=true. "
+                    "External binding requires Windows firewall exception "
+                    "(see docs/windows-firewall.md)."
+                )
+            else:
+                self.logger.info(
+                    f"Communication transport switched to TcpTransport "
+                    f"({raw_host}:{port_int}) for network.enabled=true."
+                )
         except ImportError:
             self.logger.warning(
                 "TcpTransport not available; falling back to LocalTransport."
@@ -596,9 +624,20 @@ class CoreApplication:
                 )
                 if not isinstance(endpoint, str):
                     endpoint = "http://localhost:8081"
-                self.rescs = HttpRescsAdapter(endpoint=endpoint)
+                timeout = self.configuration.get("rescs.timeout", 2.0)
+                if isinstance(timeout, str):
+                    try:
+                        timeout = float(timeout)
+                    except ValueError:
+                        timeout = 2.0
+                fallback = self.configuration.get("rescs.fallback", True)
+                if not isinstance(fallback, bool):
+                    fallback = True
+                self.rescs = HttpRescsAdapter(
+                    endpoint=endpoint, timeout=float(timeout), fallback=bool(fallback)
+                )
                 self.logger.info(
-                    f"R.E.S.C.S. adapter switched to Http ({endpoint})."
+                    f"R.E.S.C.S. adapter switched to Http ({endpoint}, timeout={timeout})."
                 )
             else:
                 self.logger.warning(

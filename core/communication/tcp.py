@@ -16,12 +16,14 @@ class TcpTransport(Transport):
     """
     TCP message transport for Windows co-hosted deployment.
 
-    For v0.2, TcpTransport provides the same deterministic in-process
-    delivery as LocalTransport plus optional TCP framing for external
-    devices (phones, watches, R.O.V.E.R.T.). On the 32GB/1TB Windows
-    laptop it binds to ``127.0.0.1`` by default to avoid firewall prompts;
-    external binding requires explicit configuration and firewall rules
-    (deferred).
+    For v0.2.1, TcpTransport provides the same deterministic in-process
+    delivery as LocalTransport plus TCP framing for external devices
+    (phones, watches, R.O.V.E.R.T.). On the 32GB/1TB Windows laptop it
+    binds to ``127.0.0.1`` by default to avoid firewall prompts.
+    External binding to ``0.0.0.0`` is available when
+    ``network.enabled=true`` and ``communication.host=0.0.0.0`` — this
+    exposes the transport on all interfaces and requires a Windows
+    firewall exception.
 
     Message framing uses length-prefixed JSON via MessageSerializer so
     identity_id and routing survive the wire.
@@ -35,8 +37,14 @@ class TcpTransport(Transport):
     ) -> None:
         from threading import RLock
 
-        self._host = host if host else "127.0.0.1"
+        # Normalize host, preserving 0.0.0.0 for external LAN exposure
+        raw_host = (host or "127.0.0.1").strip()
+        if raw_host == "":
+            raw_host = "127.0.0.1"
+        self._host = raw_host
         self._port = int(port) if isinstance(port, int) else 0
+        if self._port < 0 or self._port > 65535:
+            raise ValueError(f"TCP port out of range: {self._port}")
         self._on_delivery = on_delivery
 
         self._handlers: dict[str, MessageHandler] = {}
@@ -57,6 +65,11 @@ class TcpTransport(Transport):
     @property
     def port(self) -> int:
         return self._port
+
+    @property
+    def is_external(self) -> bool:
+        """Return whether the transport is bound for external LAN access."""
+        return self._host == "0.0.0.0"
 
     def start(self) -> None:
         """Start the transport and optional TCP listener."""
@@ -201,8 +214,11 @@ class TcpTransport(Transport):
         except Exception:
             pass
 
-        # Bind to localhost by default to avoid firewall prompts
-        bind_host = self._host if self._host not in ("0.0.0.0", "", None) else "127.0.0.1"
+        # Respect 0.0.0.0 for external LAN exposure (requires firewall rule)
+        bind_host = self._host if self._host else "127.0.0.1"
+        if bind_host == "0.0.0.0":
+            # Listening on all interfaces — caller must ensure firewall is configured
+            pass
         sock.bind((bind_host, self._port))
         # Update port if ephemeral (0)
         actual_port = sock.getsockname()[1]
