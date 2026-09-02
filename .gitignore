@@ -13,10 +13,13 @@ venv/
 env/
 
 # In-place virtual environment (python -m venv .)
+# Note: /Scripts/ is capital-S Windows venv; lower-case scripts/ is project scripts
 /Lib/
-/Scripts/
 /Include/
 /pyvenv.cfg
+/Scripts/
+!scripts/
+!scripts/**
 
 # IDE
 .vscode/
