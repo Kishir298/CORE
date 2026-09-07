@@ -2219,6 +2219,21 @@ class CoreApplication:
             merged.setdefault(key, value)
         return merged
 
+    def create_organization_ingestor(self):
+        """Build a RESCS -> organization ingestor for the current adapter.
+
+        The ingestor is constructed on demand so it always reads through
+        the active R.E.S.C.S. adapter and organizes into the live
+        registry/organization index. It holds no lifecycle of its own.
+        """
+        from core.organization.ingestion import ResourceIngestor
+
+        return ResourceIngestor(
+            self.rescs,
+            self.resources,
+            self.organization,
+        )
+
     def _check_services(self) -> HealthResult:
         running = [
             service
