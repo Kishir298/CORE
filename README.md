@@ -86,7 +86,7 @@ rescs:
 
 ## Tests
 
-512 passed, 3 skipped: `python3 -m pytest -q` (or `py -m pytest -q` on Windows) · Integration spine in `tests/integration/test_core_spine.py:1` + scheduler via `agent` service + device localhost simulation in `tests/integration/test_device_messaging.py:1` and `tests/communication/test_device_protocol.py:1` + data distribution simulation in `tests/integration/test_data_distribution.py:1` and `tests/data/:1`. Physical-device communication has NOT been demonstrated; all device behavior is validated via `127.0.0.1` simulation.
+526 passed, 3 skipped: `python3 -m pytest -q` (or `py -m pytest -q` on Windows) · Integration spine in `tests/integration/test_core_spine.py:1` + scheduler via `agent` service + device localhost simulation in `tests/integration/test_device_messaging.py:1` and `tests/communication/test_device_protocol.py:1` + data distribution simulation in `tests/integration/test_data_distribution.py:1` and `tests/data/:1` + persistence simulation in `tests/communication/test_device_persistence.py:1`. Physical-device communication has NOT been demonstrated; all device behavior is validated via `127.0.0.1` simulation (see `docs/lan-readiness.md`, status NOT YET PERFORMED).
 
 ## Project Layout
 
@@ -111,6 +111,7 @@ CORE/
   docs/
     data-distribution.md
     device-communication.md
+    lan-readiness.md
     windows-autostart.md
     windows-firewall.md
   scripts/windows/

@@ -151,4 +151,49 @@ Everything above is implemented and validated by the automated localhost
 framing, handshake, auth, registration, routing and reconnect, plus
 concurrency and stale-connection races). Physical-device communication
 (phones, tablets, watches, ESP32 over LAN/internet) has NOT been
-demonstrated and is explicitly out of scope for this implementation.
+demonstrated — see `docs/lan-readiness.md` for the physical validation
+procedure (status: NOT YET PERFORMED).
+
+## Persistent registration
+
+Registered device identities survive disconnections **and** C.O.R.E.
+process restarts. Persistence flows through the existing R.E.S.C.S.
+adapter architecture — never a second database:
+
+```text
+Mac device
+    ↓ TCP/TLS
+Windows C.O.R.E.
+    ↓ DEVICE_REGISTER (+ auth token handoff)
+DeviceRegistry (authoritative, one record per device_id)
+    ↓ sanitized identity snapshot (no connection_id, no live status)
+R.E.S.C.S. persistence (dedicated device records)
+```
+
+Persisted identity fields: `device_id, device_name, device_type,
+platform, capabilities, identity_id, protocol_version, registered_at,
+last_seen, permissions, token`. Runtime fields (`status`,
+`connection_id`) are never persisted.
+
+On startup C.O.R.E. restores every persisted identity as `offline` with
+`connection_id=None`, mirrors it into the `ResourceRegistry` (runtime
+mirror only), and re-provisions the `SecurityManager` identity (without
+overwriting operator-provisioned ones) so the device can authenticate on
+reconnect. Only a fresh authentication + `DEVICE_REGISTER` transitions it
+to `online` with a new `connection_id` — reconnecting keeps exactly one
+logical record. Disconnect, C.O.R.E. restart and reconnect therefore all
+preserve the registered identity:
+
+```text
+disconnect: YES
+C.O.R.E. restart: YES
+reconnect: YES
+```
+
+Covered by `tests/communication/test_device_persistence.py` (round-trip,
+multi-device restart counts, repeated reconnects, stale-close race,
+app shutdown/restart with `FileRescsAdapter`, post-restart discovery,
+credential rejection, cross-identity claim rejection, TCP reconnect after
+restore). The auth token is stored in local R.E.S.C.S. storage (same trust
+domain as the server process, e.g. git-ignored `var/rescs.json`); never
+commit credential-bearing state files.
