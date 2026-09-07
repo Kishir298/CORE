@@ -35,6 +35,7 @@ Configuration resolves `config/core.yaml` by default; `--config` overrides. Envi
 *   **Agent Scheduler** — `AgentScheduler` (`core/scheduler/scheduler.py:1`) capability-driven `Device → suitable Agent → windows-host` offload, 3 default profiles (`asis-local`, `asis-offload`, `tiviss-compat`), exposed via `agent` service (`assign/release/profiles/assignments`).
 *   **Health / Events** — `HealthMonitor` (`core/health/monitor.py:1`) 14 checks including `devices`/`agent`/`rescs`, bridges to `EventBus` (`core/events/bus.py:1`).
 *   **Device Communication** — `DeviceRegistry` (`core/communication/devices.py:1`, authoritative, thread-safe, mirrored into `ResourceRegistry`) + protocol constants (`core/communication/protocol.py:1`): `DEVICE_REGISTER`/`DISCOVER`/`INFO` with presence (`online`/`offline`), destination validation, `device -> C.O.R.E. -> device` routing preserving `message_id`/`request_id`/`identity_id`, `DEVICE_ERROR` envelopes, `DEVICE_CONNECTED`/`DISCONNECTED` events. Full spec in `docs/device-communication.md`; localhost simulation in `tests/integration/test_device_messaging.py:1`.
+*   **Data Organization** — `DataOrganizer` (`core/data/organizer.py:1`): `DATA_REQUEST` → owner-scoped R.E.S.C.S. retrieval (`core/data/rescs_reader.py:1`: existing-adapter + HTTP backends, 2.0 s timeout, 0 retries) → normalization, deterministic ordering (`updated_at` DESC, `id` ASC), pagination (`limit` 1–500, `offset` ≥ 0) → `DATA_RESPONSE`/`DATA_ERROR` via existing device routing incl. `destination_device_id` distribution. Limits: 500 items, 5 MiB record/file-metadata budgets, 1 MiB inline files with SHA-256 verification. Full spec in `docs/data-distribution.md`; localhost simulation in `tests/integration/test_data_distribution.py:1`.
 
 ## Phase Matrix (v0.3.0)
 
@@ -85,7 +86,7 @@ rescs:
 
 ## Tests
 
-444 passed, 3 skipped: `python3 -m pytest -q` (or `py -m pytest -q` on Windows) · Integration spine in `tests/integration/test_core_spine.py:1` + scheduler via `agent` service + device localhost simulation in `tests/integration/test_device_messaging.py:1` and `tests/communication/test_device_protocol.py:1`. Physical-device communication has NOT been demonstrated; all device behavior is validated via `127.0.0.1` simulation.
+512 passed, 3 skipped: `python3 -m pytest -q` (or `py -m pytest -q` on Windows) · Integration spine in `tests/integration/test_core_spine.py:1` + scheduler via `agent` service + device localhost simulation in `tests/integration/test_device_messaging.py:1` and `tests/communication/test_device_protocol.py:1` + data distribution simulation in `tests/integration/test_data_distribution.py:1` and `tests/data/:1`. Physical-device communication has NOT been demonstrated; all device behavior is validated via `127.0.0.1` simulation.
 
 ## Project Layout
 
@@ -95,6 +96,7 @@ CORE/
     application/    # CoreApplication
     communication/  # Transport, Local, Tcp, Serializer, Protocol, DeviceRegistry
     configuration/  # Manager, Loader, Models, Validator
+    data/           # DataOrganizer, RescsDataReader, validation, normalization
     events/         # Bus, Types
     health/         # Monitor (14 checks)
     organization/   # Engine
@@ -107,6 +109,7 @@ CORE/
     cli/            # Foreground loop, --config/--env, agents
   config/core.yaml
   docs/
+    data-distribution.md
     device-communication.md
     windows-autostart.md
     windows-firewall.md
