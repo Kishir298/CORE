@@ -30,6 +30,7 @@ Configuration resolves `config/core.yaml` by default; `--config` overrides. Envi
 *   **Communication** — `Transport` ABC (`core/communication/transport.py:13`) with `LocalTransport` (`core/communication/transport.py:88`) and `TcpTransport` (`core/communication/tcp.py:1`) on `127.0.0.1` by default, `0.0.0.0` when `network.enabled=true` for LAN exposure. `MessageSerializer` (`core/communication/serializer.py:11`) preserves `identity_id` over wire. External binding requires Windows firewall rule (`docs/windows-firewall.md`).
 *   **Routing / Services** — `Router` (`core/routing/router.py:16`) + `ServiceManager`/`ServiceDispatcher` (`core/services/dispatch.py:18`) with pluggable security (`core/security/provider.py:1`). 9 services including `agent` scheduler.
 *   **Resources** — `ResourceRegistry` (`core/resources/registry.py:1`) + typed helpers `create_device_resource`/`create_agent_resource` (`core/resources/models.py:73`).
+*   **Organization Ingestion** — `ResourceIngestor` (`core/organization/ingestion.py:1`): R.E.S.C.S. adapter → strict contract validation → normalize into existing `Resource` (storage extras dropped) → registry upsert → stable `resource:<id>` entries via existing `categorize_resource` (idempotent, in-place updates, explicit-deletion removal, backend failure never deletes). Full spec in `docs/organization-rescs.md`; boundary tests in `tests/organization/test_organization_ingestion.py:1`.
 *   **Runtime History** — `RuntimeHistory` (`core/runtime/history.py:1`) tracks device/agent/service intervals; persisted via adapter.
 *   **R.E.S.C.S. Adapter** — `RescsAdapter` (`core/rescs/adapter.py:1`) with `InMemoryRescsAdapter`, `FileRescsAdapter` (`var/rescs.json`), `HttpRescsAdapter` (real HTTP with fallback, `rescs.endpoint/timeout/fallback`).
 *   **Agent Scheduler** — `AgentScheduler` (`core/scheduler/scheduler.py:1`) capability-driven `Device → suitable Agent → windows-host` offload, 3 default profiles (`asis-local`, `asis-offload`, `tiviss-compat`), exposed via `agent` service (`assign/release/profiles/assignments`).
@@ -86,7 +87,7 @@ rescs:
 
 ## Tests
 
-526 passed, 3 skipped: `python3 -m pytest -q` (or `py -m pytest -q` on Windows) · Integration spine in `tests/integration/test_core_spine.py:1` + scheduler via `agent` service + device localhost simulation in `tests/integration/test_device_messaging.py:1` and `tests/communication/test_device_protocol.py:1` + data distribution simulation in `tests/integration/test_data_distribution.py:1` and `tests/data/:1` + persistence simulation in `tests/communication/test_device_persistence.py:1`. Physical-device communication has NOT been demonstrated; all device behavior is validated via `127.0.0.1` simulation (see `docs/lan-readiness.md`, status NOT YET PERFORMED).
+  569 passed, 3 skipped: `python3 -m pytest -q` (or `py -m pytest -q` on Windows) · Integration spine in `tests/integration/test_core_spine.py:1` + scheduler via `agent` service + device localhost simulation in `tests/integration/test_device_messaging.py:1` and `tests/communication/test_device_protocol.py:1` + data distribution simulation in `tests/integration/test_data_distribution.py:1` and `tests/data/:1` + persistence simulation in `tests/communication/test_device_persistence.py:1` + organization boundary in `tests/organization/test_organization_ingestion.py:1`. Physical-device communication has NOT been demonstrated; all device behavior is validated via `127.0.0.1` simulation (see `docs/lan-readiness.md`, status NOT YET PERFORMED).
 
 ## Project Layout
 
@@ -112,6 +113,7 @@ CORE/
     data-distribution.md
     device-communication.md
     lan-readiness.md
+    organization-rescs.md
     windows-autostart.md
     windows-firewall.md
   scripts/windows/
