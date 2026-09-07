@@ -3,37 +3,46 @@ from __future__ import annotations
 import socket
 import struct
 import threading
+import time
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from core.errors import MessageError
 
+from .connection import ConnectionSession, ConnectionState
 from .models import Message
 from .serializer import MessageSerializer
 from .transport import MessageHandler, Transport
+
+# Fixed protocol limits (NOT configurable per hardening spec).
+MAX_FRAME_SIZE = 10 * 1024 * 1024
+MAX_CONNECTIONS = 64
+HEADER_SIZE = 4
+TLS_HANDSHAKE_TIMEOUT = 5.0
+IDLE_CONNECTION_TIMEOUT = 300.0
+
+HANDSHAKE_TYPE = "CORE_HANDSHAKE"
+HANDSHAKE_RESPONSE_TYPE = "CORE_HANDSHAKE_RESPONSE"
 
 
 class TcpTransport(Transport):
     """
     TCP message transport for Windows co-hosted deployment.
 
-    For v0.3, TcpTransport provides the same deterministic in-process
-    delivery as LocalTransport plus TCP framing for external devices
-    (phones, watches, R.O.V.E.R.T.). On the 32GB/1TB Windows laptop it
-    binds to ``127.0.0.1`` by default to avoid firewall prompts.
-    External binding to ``0.0.0.0`` is available when
-    ``network.enabled=true`` and ``communication.host=0.0.0.0`` — this
-    exposes the transport on all interfaces and requires a Windows
-    firewall exception.
+    Binds to ``127.0.0.1`` by default. External binding to ``0.0.0.0``
+    requires TLS (fail closed — no plaintext downgrade) and per-connection
+    handshake + authentication before application messages.
 
-    TLS (v0.3): set ``communication.tls.enabled=true`` with
-    ``communication.tls.certfile/keyfile`` to wrap the TCP listener in
-    TLS. When TLS is disabled or certs are missing the transport falls
-    back to plaintext — legacy clients remain compatible.
+    Localhost operation without an injected ``security_manager`` preserves
+    the legacy framing path so existing local tests keep passing.
+    When a ``security_manager`` is injected (as ``CoreApplication`` does),
+    every socket connection must complete::
 
-    Message framing uses length-prefixed JSON via MessageSerializer so
-    identity_id and routing survive the wire. TLS is transport-level only
-    and does not change the message format.
+        CORE_HANDSHAKE -> authenticate -> SESSION_ESTABLISHED
+
+    before any application message is routed. Connections are persistent
+    and support multiple messages until disconnect / idle timeout /
+    protocol violation / shutdown.
     """
 
     def __init__(
@@ -46,10 +55,13 @@ class TcpTransport(Transport):
         keyfile: str | Path | None = None,
         cafile: str | Path | None = None,
         require_client_cert: bool = False,
+        security_manager: Any | None = None,
+        version_negotiator: Callable[[str | None], str] | None = None,
+        version_supported: Callable[[str], bool] | None = None,
+        time_func: Callable[[], float] | None = None,
     ) -> None:
         from threading import RLock
 
-        # Normalize host, preserving 0.0.0.0 for external LAN exposure
         raw_host = (host or "127.0.0.1").strip()
         if raw_host == "":
             raw_host = "127.0.0.1"
@@ -59,22 +71,48 @@ class TcpTransport(Transport):
             raise ValueError(f"TCP port out of range: {self._port}")
         self._on_delivery = on_delivery
 
-        # TLS state — plaintext fallback preserves legacy compatibility
         self._use_tls = bool(use_tls)
         self._certfile = Path(certfile) if certfile else None
         self._keyfile = Path(keyfile) if keyfile else None
         self._cafile = Path(cafile) if cafile else None
         self._require_client_cert = bool(require_client_cert)
-        self._tls_active = False  # becomes True only after successful context build
+        self._tls_active = False
         self._ssl_context = None  # type: ignore
+
+        # External binding mandates TLS — fail closed at construction.
+        if self.is_external and not self._use_tls:
+            raise ValueError(
+                "External TCP (0.0.0.0) requires TLS: "
+                "set use_tls=True with a valid certfile."
+            )
         if self._use_tls:
             try:
                 self._ssl_context = self._build_ssl_context()
                 self._tls_active = True
-            except Exception:
-                # Defer failure to start — fallback to plaintext with warning
+            except Exception as exc:
+                if self.is_external:
+                    # FAIL CLOSED for external devices: never downgrade.
+                    raise
+                # Localhost legacy fallback: plaintext with warning state.
                 self._ssl_context = None
                 self._tls_active = False
+                _ = exc
+
+        self._security_manager = security_manager
+        self._version_negotiator = version_negotiator
+        self._version_supported = version_supported
+        if self._version_negotiator is None or self._version_supported is None:
+            try:
+                from core.version import is_supported as _is_supported
+                from core.version import negotiate as _negotiate
+
+                if self._version_negotiator is None:
+                    self._version_negotiator = _negotiate
+                if self._version_supported is None:
+                    self._version_supported = _is_supported
+            except Exception:
+                pass
+        self._time = time_func or time.monotonic
 
         self._handlers: dict[str, MessageHandler] = {}
         self._lock = RLock()
@@ -82,10 +120,18 @@ class TcpTransport(Transport):
         self._messages_sent = 0
         self._messages_received = 0
 
-        # Optional TCP server state
+        # Hardened session registry + metrics.
+        self._connections: dict[str, ConnectionSession] = {}
+        self._total_connections = 0
+        self._rejected_connections = 0
+        self._authentication_failures = 0
+        self._protocol_failures = 0
+
         self._server_socket: socket.socket | None = None
         self._server_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+
+    # -- properties ------------------------------------------------------
 
     @property
     def host(self) -> str:
@@ -107,14 +153,18 @@ class TcpTransport(Transport):
 
     @property
     def uses_tls(self) -> bool:
-        """Return whether TLS was requested (may be inactive if certs missing)."""
+        """Return whether TLS was requested (may be inactive if fallback)."""
         return self._use_tls
 
+    @property
+    def hardened(self) -> bool:
+        """Return whether per-connection handshake/auth is enforced."""
+        return self._security_manager is not None
+
     def _build_ssl_context(self):  # type: ignore
-        """Build an SSLContext for the TLS listener."""
+        """Build an SSLContext for the TLS listener (TLS 1.2+ only)."""
         import ssl
 
-        # Validate certfiles exist when TLS is requested
         if self._certfile is not None and not self._certfile.exists():
             raise FileNotFoundError(f"TLS certfile not found: {self._certfile}")
         if self._keyfile is not None and not self._keyfile.exists():
@@ -123,19 +173,18 @@ class TcpTransport(Transport):
             raise FileNotFoundError(f"TLS cafile not found: {self._cafile}")
 
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        # Modern TLS 1.2+ only; fallback to plaintext on failure is handled by caller
         try:
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         except Exception:
-            # Fallback for older Python
-            ctx.options |= getattr(ssl, "OP_NO_TLSv1", 0) | getattr(ssl, "OP_NO_TLSv1_1", 0)
+            ctx.options |= getattr(ssl, "OP_NO_TLSv1", 0) | getattr(
+                ssl, "OP_NO_TLSv1_1", 0
+            )
         if self._certfile:
             ctx.load_cert_chain(
                 certfile=str(self._certfile),
                 keyfile=str(self._keyfile) if self._keyfile else None,
             )
         else:
-            # No cert — cannot do TLS; caller will treat as fallback
             raise FileNotFoundError("TLS certfile not configured for TLS mode")
 
         if self._require_client_cert and self._cafile:
@@ -147,9 +196,10 @@ class TcpTransport(Transport):
 
         return ctx
 
+    # -- lifecycle -------------------------------------------------------
+
     def start(self) -> None:
         """Start the transport and optional TCP listener."""
-
         needs_server = False
         with self._lock:
             if not self._active:
@@ -157,33 +207,32 @@ class TcpTransport(Transport):
                 self._stop_event.clear()
                 needs_server = self._port != 0 and self._server_socket is None
             else:
-                # Already active — ensure TCP listener is started if requested port
-                # was set post-construction (e.g., config-driven) and server missing.
-                # Preserves legacy plaintext fallback: failures keep local-only mode.
                 needs_server = self._port != 0 and self._server_socket is None
 
-        # Lazily start TCP listener only when a non-zero port is requested.
-        # Failures fall back to local-only mode.
         if needs_server:
+            # Fail-closed errors propagate for external; localhost keeps
+            # legacy best-effort fallback.
             try:
                 self._start_server()
             except Exception:
-                # TCP is optional; local delivery remains available
+                if self.is_external:
+                    raise
                 pass
 
     def stop(self) -> None:
-        """Stop the transport while retaining registered endpoints."""
-
+        """Stop the transport, close sessions, retain endpoints."""
         with self._lock:
             self._active = False
             self._stop_event.set()
-
+        self._close_all_connections()
         self._stop_server()
 
     @property
     def is_running(self) -> bool:
         with self._lock:
             return self._active
+
+    # -- endpoints (unchanged public API) --------------------------------
 
     def register(self, endpoint: str, handler: MessageHandler) -> None:
         if not endpoint:
@@ -219,15 +268,9 @@ class TcpTransport(Transport):
                 raise MessageError(f"Destination not registered: {message.destination}")
             self._messages_sent += 1
 
-        # If a real TCP peer is not involved, deliver locally.
-        # This keeps deterministic behaviour for single-host Windows deployment
-        # while preserving serializer round-trip for future network hops.
         try:
-            # Simulate wire serialization for external destinations
-            # (no-op for local, but ensures identity_id survives)
             serialized = MessageSerializer.serialize(message)
             deserialized = MessageSerializer.deserialize(serialized)
-            # Use deserialized for handler to verify round-trip
             response = handler(deserialized)
         except MessageError:
             raise
@@ -278,47 +321,114 @@ class TcpTransport(Transport):
             self._handlers.clear()
             self._messages_sent = 0
             self._messages_received = 0
-        # Keep server socket state; caller may restart
+            self._connections.clear()
+            self._total_connections = 0
+            self._rejected_connections = 0
+            self._authentication_failures = 0
+            self._protocol_failures = 0
 
     def count(self) -> int:
         return self.endpoint_count()
 
-    # -- TCP server helpers (optional, v0.2 stub) -------------------------
+    # -- session registry + metrics (additive API) ------------------------
+
+    def get_connection(self, connection_id: str) -> ConnectionSession | None:
+        with self._lock:
+            return self._connections.get(connection_id)
+
+    def list_connections(self) -> list[ConnectionSession]:
+        with self._lock:
+            return list(self._connections.values())
+
+    def connection_count(self) -> int:
+        with self._lock:
+            return len(self._connections)
+
+    def active_connections(self) -> int:
+        return self.connection_count()
+
+    def total_connections(self) -> int:
+        with self._lock:
+            return self._total_connections
+
+    def rejected_connections(self) -> int:
+        with self._lock:
+            return self._rejected_connections
+
+    def authentication_failures(self) -> int:
+        with self._lock:
+            return self._authentication_failures
+
+    def protocol_failures(self) -> int:
+        with self._lock:
+            return self._protocol_failures
+
+    def _register_session(self, session: ConnectionSession) -> bool:
+        """Register a session if capacity allows. Returns True if admitted."""
+        with self._lock:
+            if len(self._connections) >= MAX_CONNECTIONS:
+                self._rejected_connections += 1
+                return False
+            self._connections[session.connection_id] = session
+            self._total_connections += 1
+            return True
+
+    def _remove_session(self, connection_id: str) -> None:
+        with self._lock:
+            session = self._connections.pop(connection_id, None)
+            if session is not None:
+                session.transition(ConnectionState.CLOSED)
+
+    def _close_all_connections(self) -> None:
+        with self._lock:
+            ids = list(self._connections.keys())
+        for cid in ids:
+            self._remove_session(cid)
+
+    # -- TCP server --------------------------------------------------------
 
     def _start_server(self) -> None:
         if self._server_socket is not None:
             return
 
+        # External binding mandates active TLS — fail closed.
+        if self.is_external:
+            if not self._use_tls:
+                raise ValueError("External TCP (0.0.0.0) requires TLS.")
+            if self._ssl_context is None:
+                try:
+                    self._ssl_context = self._build_ssl_context()
+                except Exception:
+                    self._tls_active = False
+                    raise
+                else:
+                    self._tls_active = True
+            if not self._tls_active or self._ssl_context is None:
+                raise ValueError("External TCP requires active TLS context.")
+            is_tls = True
+        else:
+            is_tls = False
+            if self._use_tls:
+                if self._ssl_context is None:
+                    try:
+                        self._ssl_context = self._build_ssl_context()
+                    except Exception:
+                        self._tls_active = False
+                        self._ssl_context = None
+                    else:
+                        self._tls_active = True
+                is_tls = self._tls_active and self._ssl_context is not None
+            else:
+                self._tls_active = False
+
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # Windows-friendly socket options
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         except Exception:
             pass
 
-        # Respect 0.0.0.0 for external LAN exposure (requires firewall rule)
         bind_host = self._host if self._host else "127.0.0.1"
-        if bind_host == "0.0.0.0":
-            # Listening on all interfaces — caller must ensure firewall is configured
-            pass
-        # Attempt TLS wrapping — fallback to plaintext on failure preserves legacy compatibility
-        is_tls = False
-        if self._use_tls:
-            if self._ssl_context is None:
-                try:
-                    self._ssl_context = self._build_ssl_context()
-                except Exception:
-                    # Fallback: plaintext listener so legacy clients still connect
-                    self._tls_active = False
-                    self._ssl_context = None
-                else:
-                    self._tls_active = True
-            is_tls = self._tls_active and self._ssl_context is not None
-        else:
-            self._tls_active = False
-
         sock.bind((bind_host, self._port))
-        # Update port if ephemeral (0)
         actual_port = sock.getsockname()[1]
         self._port = actual_port
         sock.listen(5)
@@ -328,23 +438,34 @@ class TcpTransport(Transport):
         def _accept_loop() -> None:
             while not self._stop_event.is_set():
                 try:
-                    conn, _addr = sock.accept()
+                    conn, addr = sock.accept()
                 except socket.timeout:
                     continue
                 except OSError:
                     break
 
-                # TLS: wrap the accepted connection so legacy plaintext clients
-                # are gracefully rejected without crashing the listener; legacy
-                # plaintext fallback listeners (is_tls=False) accept normally.
+                # Enforce connection cap before TLS work.
+                with self._lock:
+                    full = len(self._connections) >= MAX_CONNECTIONS
+                    if full:
+                        self._rejected_connections += 1
+                if full:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    continue
+
+                remote = f"{addr[0]}:{addr[1]}" if addr else ""
                 if is_tls and self._ssl_context is not None:
                     try:
-                        # Wrap with timeout to avoid blocking forever on handshake
-                        conn.settimeout(5.0)
-                        conn = self._ssl_context.wrap_socket(  # type: ignore
+                        conn.settimeout(TLS_HANDSHAKE_TIMEOUT)
+                        conn = self._ssl_context.wrap_socket(
                             conn, server_side=True, do_handshake_on_connect=True
                         )
                     except Exception:
+                        with self._lock:
+                            self._rejected_connections += 1
                         try:
                             conn.close()
                         except Exception:
@@ -353,13 +474,11 @@ class TcpTransport(Transport):
 
                 threading.Thread(
                     target=self._handle_connection,
-                    args=(conn,),
+                    args=(conn, remote, is_tls),
                     daemon=True,
                 ).start()
 
-        self._server_thread = threading.Thread(
-            target=_accept_loop, daemon=True
-        )
+        self._server_thread = threading.Thread(target=_accept_loop, daemon=True)
         self._server_thread.start()
 
     def _stop_server(self) -> None:
@@ -378,41 +497,322 @@ class TcpTransport(Transport):
                 pass
             self._server_thread = None
 
-    def _handle_connection(self, conn: socket.socket) -> None:
-        with conn:
+    # -- connection handling ----------------------------------------------
+
+    def _handle_connection(
+        self, conn: socket.socket, remote_address: str = "", is_tls: bool = False
+    ) -> None:
+        now = self._time()
+        session = ConnectionSession(
+            remote_address=remote_address,
+            connected_at=now,
+            last_activity=now,
+        )
+        session.transition(
+            ConnectionState.TLS_ESTABLISHED if is_tls else ConnectionState.CONNECTED
+        )
+        if not self._register_session(session):
             try:
-                # Read 4-byte length prefix
-                header = self._recv_exact(conn, 4)
-                if not header:
-                    return
-                length = struct.unpack("!I", header)[0]
-                if length <= 0 or length > 10 * 1024 * 1024:
-                    return
-                data = self._recv_exact(conn, length)
-                if not data:
-                    return
-                text = data.decode("utf-8")
-                message = MessageSerializer.deserialize(text)
-                response = self.send(message)
-                if response is not None:
-                    resp_text = MessageSerializer.serialize(response)
-                    resp_data = resp_text.encode("utf-8")
-                    conn.sendall(struct.pack("!I", len(resp_data)) + resp_data)
+                conn.close()
             except Exception:
                 pass
+            return
+        try:
+            if self._security_manager is not None:
+                self._serve_hardened(conn, session)
+            else:
+                self._serve_legacy(conn, session)
+        finally:
+            try:
+                try:
+                    conn.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
+                conn.close()
+            except Exception:
+                pass
+            session.transition(ConnectionState.CLOSING)
+            self._remove_session(session.connection_id)
+
+    def _serve_legacy(self, conn: socket.socket, session: ConnectionSession) -> None:
+        """Persistent legacy framing loop (no handshake) for localhost compat."""
+        try:
+            while not self._stop_event.is_set():
+                if not self._wait_readable(conn, session):
+                    return
+                frame = self._recv_frame(conn, session)
+                if frame is None:
+                    return
+                try:
+                    message = MessageSerializer.deserialize(frame)
+                except Exception:
+                    with self._lock:
+                        self._protocol_failures += 1
+                    return
+                try:
+                    self._validate_message_shape(message)
+                except MessageError:
+                    with self._lock:
+                        self._protocol_failures += 1
+                    return
+                session.messages_received += 1
+                session.touch(self._time())
+                try:
+                    response = self.send(message)
+                except MessageError:
+                    with self._lock:
+                        self._protocol_failures += 1
+                    return
+                if response is not None:
+                    session.messages_sent += 1
+                    self._send_frame(conn, response)
+                    session.touch(self._time())
+        except Exception:
+            with self._lock:
+                self._protocol_failures += 1
+            return
+
+    def _serve_hardened(self, conn: socket.socket, session: ConnectionSession) -> None:
+        """Handshake -> authenticate -> persistent validated message loop."""
+        try:
+            session.transition(ConnectionState.AUTHENTICATING)
+            if not self._wait_readable(conn, session):
+                with self._lock:
+                    self._protocol_failures += 1
+                return
+            frame = self._recv_frame(conn, session)
+            if frame is None:
+                with self._lock:
+                    self._protocol_failures += 1
+                return
+            try:
+                hello = MessageSerializer.deserialize(frame)
+            except Exception:
+                with self._lock:
+                    self._protocol_failures += 1
+                return
+            ok = self._process_handshake(conn, session, hello)
+            if not ok:
+                return
+            # Authenticated message loop.
+            while not self._stop_event.is_set():
+                if not self._wait_readable(conn, session):
+                    return
+                frame = self._recv_frame(conn, session)
+                if frame is None:
+                    return
+                try:
+                    message = MessageSerializer.deserialize(frame)
+                except Exception:
+                    with self._lock:
+                        self._protocol_failures += 1
+                    return
+                if message.message_type == HANDSHAKE_TYPE:
+                    # Duplicate handshake is a protocol violation.
+                    with self._lock:
+                        self._protocol_failures += 1
+                    return
+                try:
+                    self._validate_message_shape(message)
+                    self._enforce_identity(message, session)
+                except MessageError:
+                    with self._lock:
+                        self._protocol_failures += 1
+                    return
+                session.messages_received += 1
+                session.touch(self._time())
+                try:
+                    response = self.send(message)
+                except MessageError:
+                    with self._lock:
+                        self._protocol_failures += 1
+                    return
+                if response is not None:
+                    session.messages_sent += 1
+                    self._send_frame(conn, response)
+                    session.touch(self._time())
+        except Exception:
+            with self._lock:
+                self._protocol_failures += 1
+            return
+
+    def _process_handshake(
+        self, conn: socket.socket, session: ConnectionSession, hello: Message
+    ) -> bool:
+        """Validate handshake, authenticate, reply. Returns True on success."""
+        if hello.message_type != HANDSHAKE_TYPE:
+            # Application message before handshake.
+            with self._lock:
+                self._protocol_failures += 1
+            return False
+        payload = hello.payload if isinstance(hello.payload, dict) else None
+        if payload is None:
+            with self._lock:
+                self._protocol_failures += 1
+            return False
+        identity_id = payload.get("identity_id")
+        credential = payload.get("credential")
+        protocol_version = payload.get("protocol_version")
+        if not identity_id or credential is None or not protocol_version:
+            with self._lock:
+                self._protocol_failures += 1
+            return False
+        if not isinstance(identity_id, str) or not isinstance(protocol_version, str):
+            with self._lock:
+                self._protocol_failures += 1
+            return False
+        # Version validation via existing infrastructure.
+        try:
+            supported = (
+                self._version_supported(str(protocol_version))
+                if self._version_supported is not None
+                else True
+            )
+            negotiated = (
+                self._version_negotiator(str(protocol_version))
+                if self._version_negotiator is not None
+                else str(protocol_version)
+            )
+        except Exception:
+            with self._lock:
+                self._protocol_failures += 1
+            return False
+        if not supported:
+            with self._lock:
+                self._protocol_failures += 1
+            return False
+        # External auth must not use existence-only provider.
+        provider = getattr(self._security_manager, "provider", None)
+        provider_name = type(provider).__name__ if provider is not None else ""
+        if provider_name == "ExistenceAuthenticationProvider":
+            with self._lock:
+                self._authentication_failures += 1
+            return False
+        try:
+            self._security_manager.authenticate(str(identity_id), credential)
+        except Exception:
+            with self._lock:
+                self._authentication_failures += 1
+            return False
+        session.mark_authenticated(str(identity_id), self._time())
+        session.messages_received += 1
+        response = Message(
+            source="core",
+            destination=str(identity_id),
+            message_type=HANDSHAKE_RESPONSE_TYPE,
+            payload={
+                "authenticated": True,
+                "identity_id": str(identity_id),
+                "protocol_version": negotiated,
+                "connection_id": session.connection_id,
+            },
+            identity_id=str(identity_id),
+        )
+        try:
+            self._send_frame(conn, response)
+        except Exception:
+            with self._lock:
+                self._protocol_failures += 1
+            return False
+        session.messages_sent += 1
+        return True
+
+    # -- validation --------------------------------------------------------
 
     @staticmethod
-    def _recv_exact(conn: socket.socket, n: int) -> bytes | None:
+    def _validate_message_shape(message: Message) -> None:
+        if (
+            not message.message_id
+            or not message.source
+            or not message.destination
+            or not message.message_type
+            or message.timestamp is None
+            or not isinstance(message.payload, dict)
+        ):
+            raise MessageError("Malformed message.")
+
+    @staticmethod
+    def _enforce_identity(message: Message, session: ConnectionSession) -> None:
+        if session.identity_id is None or not session.authenticated:
+            raise MessageError("Unauthenticated session.")
+        if message.identity_id != session.identity_id:
+            raise MessageError("identity_id mismatch.")
+        if message.source != session.identity_id:
+            raise MessageError("source mismatch.")
+
+    # -- framing I/O -------------------------------------------------------
+
+    def _wait_readable(self, conn: socket.socket, session: ConnectionSession) -> bool:
+        """Wait until data is available or idle timeout expires."""
+        import select
+
+        while not self._stop_event.is_set():
+            remaining = IDLE_CONNECTION_TIMEOUT - (self._time() - session.last_activity)
+            if remaining <= 0:
+                return False
+            try:
+                r, _, _ = select.select([conn], [], [], min(1.0, remaining))
+            except Exception:
+                return False
+            if r:
+                return True
+        return False
+
+    def _recv_frame(self, conn: socket.socket, session: ConnectionSession) -> str | None:
+        header = self._recv_exact(conn, HEADER_SIZE, session)
+        if header is None:
+            return None
+        (length,) = struct.unpack("!I", header)
+        if length <= 0 or length > MAX_FRAME_SIZE:
+            return None
+        data = self._recv_exact(conn, length, session)
+        if data is None:
+            return None
+        try:
+            return data.decode("utf-8")
+        except Exception:
+            return None
+
+    def _recv_exact(
+        self, conn: socket.socket, n: int, session: ConnectionSession | None = None
+    ) -> bytes | None:
         buf = b""
         while len(buf) < n:
+            if session is not None:
+                if self._time() - session.last_activity > IDLE_CONNECTION_TIMEOUT:
+                    return None
             try:
                 chunk = conn.recv(n - len(buf))
             except socket.timeout:
+                if session is not None and (
+                    self._time() - session.last_activity > IDLE_CONNECTION_TIMEOUT
+                ):
+                    return None
                 continue
+            except OSError:
+                return None
             if not chunk:
                 return None
             buf += chunk
+            if session is not None:
+                session.touch(self._time())
         return buf
 
+    def _send_frame(self, conn: socket.socket, message: Message) -> None:
+        text = MessageSerializer.serialize(message)
+        payload = text.encode("utf-8")
+        if len(payload) == 0 or len(payload) > MAX_FRAME_SIZE:
+            raise MessageError("Response frame size invalid.")
+        conn.sendall(struct.pack("!I", len(payload)) + payload)
 
-__all__ = ["TcpTransport"]
+
+__all__ = [
+    "TcpTransport",
+    "MAX_FRAME_SIZE",
+    "MAX_CONNECTIONS",
+    "HEADER_SIZE",
+    "TLS_HANDSHAKE_TIMEOUT",
+    "IDLE_CONNECTION_TIMEOUT",
+    "HANDSHAKE_TYPE",
+    "HANDSHAKE_RESPONSE_TYPE",
+]

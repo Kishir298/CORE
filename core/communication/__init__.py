@@ -1,3 +1,4 @@
+from .connection import ConnectionSession, ConnectionState
 from .local import (
     LocalCommunication,
     LocalTransport,
@@ -16,4 +17,6 @@ __all__ = [
     "LocalCommunication",
     "LocalTransport",
     "TcpTransport",
+    "ConnectionSession",
+    "ConnectionState",
 ]

@@ -584,6 +584,7 @@ class CoreApplication:
                 keyfile=tls_key,
                 cafile=tls_ca,
                 require_client_cert=bool(tls_require),
+                security_manager=self.security,
             )
 
             # Preserve any already-registered endpoints by migrating them.
@@ -607,7 +608,8 @@ class CoreApplication:
                 )
             if bool(tls_enabled) and not getattr(new_transport, "is_tls", False):
                 self.logger.warning(
-                    "TLS requested but certfile missing or invalid — falling back to plaintext (legacy compatibility)."
+                    "TLS requested but certfile missing or invalid — falling back to plaintext "
+                    "(localhost legacy compatibility only; external 0.0.0.0 fails closed)."
                 )
         except ImportError:
             self.logger.warning(
