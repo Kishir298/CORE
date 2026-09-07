@@ -33,7 +33,8 @@ Configuration resolves `config/core.yaml` by default; `--config` overrides. Envi
 *   **Runtime History** — `RuntimeHistory` (`core/runtime/history.py:1`) tracks device/agent/service intervals; persisted via adapter.
 *   **R.E.S.C.S. Adapter** — `RescsAdapter` (`core/rescs/adapter.py:1`) with `InMemoryRescsAdapter`, `FileRescsAdapter` (`var/rescs.json`), `HttpRescsAdapter` (real HTTP with fallback, `rescs.endpoint/timeout/fallback`).
 *   **Agent Scheduler** — `AgentScheduler` (`core/scheduler/scheduler.py:1`) capability-driven `Device → suitable Agent → windows-host` offload, 3 default profiles (`asis-local`, `asis-offload`, `tiviss-compat`), exposed via `agent` service (`assign/release/profiles/assignments`).
-*   **Health / Events** — `HealthMonitor` (`core/health/monitor.py:1`) 13 checks including `agent`/`rescs`, bridges to `EventBus` (`core/events/bus.py:1`).
+*   **Health / Events** — `HealthMonitor` (`core/health/monitor.py:1`) 14 checks including `devices`/`agent`/`rescs`, bridges to `EventBus` (`core/events/bus.py:1`).
+*   **Device Communication** — `DeviceRegistry` (`core/communication/devices.py:1`, authoritative, thread-safe, mirrored into `ResourceRegistry`) + protocol constants (`core/communication/protocol.py:1`): `DEVICE_REGISTER`/`DISCOVER`/`INFO` with presence (`online`/`offline`), destination validation, `device -> C.O.R.E. -> device` routing preserving `message_id`/`request_id`/`identity_id`, `DEVICE_ERROR` envelopes, `DEVICE_CONNECTED`/`DISCONNECTED` events. Full spec in `docs/device-communication.md`; localhost simulation in `tests/integration/test_device_messaging.py:1`.
 
 ## Phase Matrix (v0.3.0)
 
@@ -84,7 +85,7 @@ rescs:
 
 ## Tests
 
-332 tests: `python3 -m pytest -q` (or `py -m pytest -q` on Windows) · Integration spine in `tests/integration/test_core_spine.py:1` + scheduler via `agent` service.
+444 passed, 3 skipped: `python3 -m pytest -q` (or `py -m pytest -q` on Windows) · Integration spine in `tests/integration/test_core_spine.py:1` + scheduler via `agent` service + device localhost simulation in `tests/integration/test_device_messaging.py:1` and `tests/communication/test_device_protocol.py:1`. Physical-device communication has NOT been demonstrated; all device behavior is validated via `127.0.0.1` simulation.
 
 ## Project Layout
 
@@ -92,10 +93,10 @@ rescs:
 CORE/
   core/
     application/    # CoreApplication
-    communication/  # Transport, Local, Tcp, Serializer
+    communication/  # Transport, Local, Tcp, Serializer, Protocol, DeviceRegistry
     configuration/  # Manager, Loader, Models, Validator
     events/         # Bus, Types
-    health/         # Monitor (13 checks)
+    health/         # Monitor (14 checks)
     organization/   # Engine
     resources/      # Models, Registry (device/agent)
     rescs/          # Adapter (memory/file/http)
@@ -106,6 +107,7 @@ CORE/
     cli/            # Foreground loop, --config/--env, agents
   config/core.yaml
   docs/
+    device-communication.md
     windows-autostart.md
     windows-firewall.md
   scripts/windows/
