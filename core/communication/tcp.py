@@ -15,6 +15,9 @@ from .devices import DeviceRegistry, DeviceRegistryError
 from .models import Message
 from .protocol import (
     COMMUNICATION_ERROR,
+    DATA_ERROR,
+    DATA_REQUEST,
+    DATA_RESPONSE,
     DEVICE_ALREADY_REGISTERED,
     DEVICE_DISCOVER,
     DEVICE_DISCOVER_RESPONSE,
@@ -85,6 +88,7 @@ class TcpTransport(Transport):
         time_func: Callable[[], float] | None = None,
         device_registry: DeviceRegistry | None = None,
         event_bus: Any | None = None,
+        data_organizer: Any | None = None,
     ) -> None:
         from threading import RLock
 
@@ -180,6 +184,9 @@ class TcpTransport(Transport):
         # Authoritative device layer (one record per device_id).
         self._devices = device_registry or DeviceRegistry()
         self._event_bus = event_bus
+        # Data organization layer (R.E.S.C.S. retrieval + packaging).
+        # None means no data backend is configured for this transport.
+        self._data_organizer = data_organizer
         # device_id -> [conn socket, write RLock, connection_id]
         self._device_sockets: dict[str, list] = {}
         self._device_registration_failures = 0
@@ -490,7 +497,7 @@ class TcpTransport(Transport):
             registration_failures = self._device_registration_failures
             discovery_requests = self._device_discovery_requests
             messages_routed = self._device_messages_routed
-        return {
+        snapshot = {
             "registered_devices": self.registered_devices(),
             "online_devices": self.online_devices(),
             "offline_devices": self.offline_devices(),
@@ -499,6 +506,25 @@ class TcpTransport(Transport):
             "device_discovery_requests": discovery_requests,
             "device_messages_routed": messages_routed,
         }
+        organizer = self._data_organizer
+        metrics_fn = getattr(organizer, "data_metrics", None)
+        if callable(metrics_fn):
+            try:
+                for key, value in dict(metrics_fn()).items():
+                    snapshot.setdefault(key, value)
+            except Exception:
+                pass
+        return snapshot
+
+    @property
+    def data_organizer(self) -> Any | None:
+        """Return the attached data organizer, if any."""
+        return self._data_organizer
+
+    def set_data_organizer(self, organizer: Any | None) -> None:
+        """Attach or replace the data organization layer."""
+        with self._lock:
+            self._data_organizer = organizer
 
     def get_device(self, device_id: str) -> dict | None:
         """Return the discovery entry for a device, or None."""
@@ -1128,8 +1154,10 @@ class TcpTransport(Transport):
             return self._handle_device_register(conn, session, message)
         if mtype in (DEVICE_DISCOVER, DEVICE_INFO):
             return self._handle_device_query(conn, session, message)
-        if mtype == DEVICE_ERROR:
-            # Never route error envelopes as application traffic.
+        if mtype == DATA_REQUEST:
+            return self._handle_data_request(conn, session, message)
+        if mtype in (DEVICE_ERROR, DATA_ERROR, DATA_RESPONSE):
+            # Never route envelopes or server responses as app traffic.
             return "handled"
         # Device-to-device routing: destination names a known device.
         try:
@@ -1313,6 +1341,138 @@ class TcpTransport(Transport):
         )
         self._send_message_frame(conn, session, response)
         return "handled"
+
+    def _handle_data_request(
+        self, conn: socket.socket, session: ConnectionSession, message: Message
+    ) -> str:
+        """Process DATA_REQUEST via the data organizer. Returns 'handled'.
+
+        Data errors never tear down the connection. Distribution to another
+        device reuses the live socket binding with the same connection-id
+        match guarantee as device routing.
+        """
+        from .protocol import DATA_ERROR as _DATA_ERROR
+        from .protocol import DEVICE_NOT_REGISTERED as _NOT_REGISTERED
+
+        sender = session.identity_id or ""
+        if not self._is_session_device_registered(session):
+            self._send_data_envelope(
+                conn, session, message,
+                _DATA_ERROR, _NOT_REGISTERED,
+                "Device must register before requesting data.",
+            )
+            return "handled"
+        organizer = self._data_organizer
+        if organizer is None:
+            from .protocol import DATA_SOURCE_UNAVAILABLE as _UNAVAILABLE
+
+            self._send_data_envelope(
+                conn, session, message,
+                _DATA_ERROR, _UNAVAILABLE, "Data service is not configured.",
+            )
+            return "handled"
+        try:
+            response, target = organizer.handle_request(
+                payload=message.payload,
+                sender_device_id=sender,
+                correlation_id=message.request_id or message.message_id,
+                message_id=message.message_id,
+                identity_id=message.identity_id,
+            )
+        except Exception:
+            from .protocol import COMMUNICATION_ERROR as _COMM_ERROR
+
+            self._send_data_envelope(
+                conn, session, message,
+                _DATA_ERROR, _COMM_ERROR, "Data request failed.",
+            )
+            return "handled"
+        if target == sender:
+            self._send_message_frame(conn, session, response)
+            session.touch(self._time())
+            try:
+                self._devices.update_last_seen(sender)
+            except Exception:
+                pass
+            return "handled"
+        # Distribution: forward the packaged response to the target device.
+        with self._lock:
+            binding = self._device_sockets.get(target)
+            binding_cid = binding[2] if binding else None
+        try:
+            record = self._devices.get(target)
+            live = (
+                record.status == DEVICE_STATUS_ONLINE
+                and record.connection_id is not None
+                and binding is not None
+                and binding_cid == record.connection_id
+            )
+        except Exception:
+            live = False
+        if not live:
+            from .protocol import DESTINATION_UNAVAILABLE as _DEST_DOWN
+
+            self._send_data_envelope(
+                conn, session, message,
+                _DATA_ERROR, _DEST_DOWN,
+                "Destination device is unavailable.",
+            )
+            with self._lock:
+                self._device_routing_failures += 1
+            return "handled"
+        dest_conn, dest_lock, _dest_cid = binding
+        try:
+            with dest_lock:
+                text = MessageSerializer.serialize(response)
+                data = text.encode("utf-8")
+                if len(data) == 0 or len(data) > MAX_FRAME_SIZE:
+                    raise MessageError("Forwarded frame size invalid.")
+                dest_conn.sendall(struct.pack("!I", len(data)) + data)
+        except Exception:
+            from .protocol import COMMUNICATION_ERROR as _COMM_ERROR
+
+            self._send_data_envelope(
+                conn, session, message,
+                _DATA_ERROR, _COMM_ERROR, "Failed to deliver data response.",
+            )
+            with self._lock:
+                self._device_routing_failures += 1
+            return "handled"
+        with self._lock:
+            self._device_messages_routed += 1
+        try:
+            now = datetime.now(timezone.utc)
+            self._devices.update_last_seen(sender, now)
+            self._devices.update_last_seen(target, now)
+        except Exception:
+            pass
+        session.touch(self._time())
+        return "handled"
+
+    def _send_data_envelope(
+        self,
+        conn: socket.socket,
+        session: ConnectionSession,
+        request: Message,
+        envelope_type: str,
+        error_code: str,
+        human_message: str,
+    ) -> None:
+        """Frame a DATA_ERROR envelope preserving the request ID."""
+        request_id = request.request_id or request.message_id
+        try:
+            destination = session.identity_id or request.source
+        except Exception:
+            destination = request.source
+        error_message = Message(
+            source="core",
+            destination=destination,
+            message_type=envelope_type,
+            payload=build_device_error(error_code, human_message, request_id),
+            request_id=request.message_id,
+            identity_id=request.identity_id,
+        )
+        self._send_message_frame(conn, session, error_message)
 
     def _handle_device_routed(
         self, conn: socket.socket, session: ConnectionSession, message: Message

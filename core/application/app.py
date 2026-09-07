@@ -97,6 +97,18 @@ class CoreApplication:
         # registry so device state stays single-sourced.
         self.device_registry = DeviceRegistry(resource_registry=self.resources)
         self.routing.set_device_registry(self.device_registry)
+        # Data organization layer: coordinates DATA_REQUEST handling over
+        # R.E.S.C.S. through the existing device communication system.
+        # The reader factory resolves the current R.E.S.C.S. adapter at
+        # call time so config-driven adapter swaps keep working.
+        from core.data.organizer import DataOrganizer
+
+        self.data_organizer = DataOrganizer(
+            reader_factory=self._data_reader_factory,
+            security_manager=self.security,
+            device_registry=self.device_registry,
+            event_bus=self.events,
+        )
         self.dispatcher = ServiceDispatcher(
             self.services,
             security=self.security,
@@ -647,6 +659,7 @@ class CoreApplication:
                 security_manager=self.security,
                 device_registry=self.device_registry,
                 event_bus=self.events,
+                data_organizer=self.data_organizer,
             )
 
             # Preserve any already-registered endpoints by migrating them.
@@ -2086,6 +2099,49 @@ class CoreApplication:
             except Exception:
                 transport_metrics = {}
         merged = dict(base)
+        for key, value in transport_metrics.items():
+            merged.setdefault(key, value)
+        return merged
+
+    def _data_reader_factory(self, owner_scope, allow_cross_owner=False):
+        """Build an owner-scoped R.E.S.C.S. reader for the current adapter."""
+        from core.data.rescs_reader import AdapterDataReader, HttpDataReader
+        from core.rescs import HttpRescsAdapter
+
+        adapter = self.rescs
+        if isinstance(adapter, HttpRescsAdapter):
+            endpoint = getattr(adapter, "_endpoint", None) or getattr(
+                adapter, "endpoint", "http://localhost:8081"
+            )
+            timeout = getattr(adapter, "_timeout", 2.0) or 2.0
+            return HttpDataReader(
+                endpoint=endpoint,
+                owner_scope=owner_scope,
+                allow_cross_owner=allow_cross_owner,
+                timeout=timeout,
+            )
+        return AdapterDataReader(
+            adapter,
+            owner_scope=owner_scope,
+            allow_cross_owner=allow_cross_owner,
+        )
+
+    def data_metrics(self) -> dict:
+        """Return data-layer observability, merging organizer counters."""
+        try:
+            metrics = dict(self.data_organizer.data_metrics())
+        except Exception:
+            metrics = {}
+        transport_metrics = {}
+        metrics_fn = getattr(self.communication, "data_metrics", None)
+        if metrics_fn is None:
+            metrics_fn = getattr(self.communication, "device_metrics", None)
+        if callable(metrics_fn):
+            try:
+                transport_metrics = dict(metrics_fn())
+            except Exception:
+                transport_metrics = {}
+        merged = dict(metrics)
         for key, value in transport_metrics.items():
             merged.setdefault(key, value)
         return merged
