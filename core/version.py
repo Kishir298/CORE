@@ -16,6 +16,9 @@ from dataclasses import dataclass
 
 __version__ = "0.3.0"
 
+# Canonical alias: core.cli.main and docs reference CORE_VERSION.
+CORE_VERSION = __version__
+
 # All versions that have shipped or are supported for negotiation
 SUPPORTED_VERSIONS = ["0.2.0", "0.2.1", "0.3.0"]
 LEGACY_VERSIONS = ["0.1.0", "0.2.0", "0.2.1"]
@@ -166,8 +169,11 @@ def legacy_payload_adapter(payload: dict, target_version: str | None = None) -> 
 
 __all__ = [
     "__version__",
+    "CORE_VERSION",
     "SUPPORTED_VERSIONS",
     "LEGACY_VERSIONS",
+    "MIN_VERSION_TLS",
+    "MIN_VERSION_AUTO_ASSIGN",
     "SemanticVersion",
     "is_supported",
     "is_legacy",
