@@ -52,6 +52,38 @@ class RescsAdapter(ABC):
     def clear(self) -> None:
         """Clear all persisted state."""
 
+    # -- registered device identities --------------------------------------
+    # Dedicated device records (plain JSON dicts, keyed by device_id).
+    # ResourceRegistry remains a runtime mirror only, never the device
+    # persistence authority. Default implementations raise so older
+    # third-party adapters stay import-compatible until they opt in.
+
+    def persist_device(self, device: dict[str, Any]) -> None:
+        """Persist one sanitized device identity snapshot."""
+        raise NotImplementedError("Device persistence is not supported.")
+
+    def fetch_device(self, device_id: str) -> dict[str, Any] | None:
+        """Fetch one persisted device identity, or None."""
+        raise NotImplementedError("Device persistence is not supported.")
+
+    def delete_device(self, device_id: str) -> None:
+        """Delete one persisted device identity."""
+        raise NotImplementedError("Device persistence is not supported.")
+
+    def list_devices(self) -> list[dict[str, Any]]:
+        """List all persisted device identities."""
+        raise NotImplementedError("Device persistence is not supported.")
+
+
+def _validate_device_dict(device: dict[str, Any]) -> dict[str, Any]:
+    """Validate + snapshot a device identity dict for storage."""
+    if not isinstance(device, dict):
+        raise ValueError("Device identity must be a JSON object.")
+    device_id = device.get("device_id")
+    if not isinstance(device_id, str) or not device_id:
+        raise ValueError("Device identity requires a non-empty device_id.")
+    return json.loads(json.dumps(device))
+
 
 class InMemoryRescsAdapter(RescsAdapter):
     """In-memory implementation (default, deterministic, no I/O)."""
@@ -59,6 +91,7 @@ class InMemoryRescsAdapter(RescsAdapter):
     def __init__(self) -> None:
         self._resources: dict[str, Resource] = {}
         self._runtimes: dict[str, RuntimeRecord] = {}
+        self._devices: dict[str, dict[str, Any]] = {}
         self._lock = RLock()
 
     def persist_resource(self, resource: Resource) -> None:
@@ -92,6 +125,7 @@ class InMemoryRescsAdapter(RescsAdapter):
                 "adapter": "memory",
                 "resources": len(self._resources),
                 "runtimes": len(self._runtimes),
+                "devices": len(self._devices),
                 "healthy": True,
             }
 
@@ -99,6 +133,25 @@ class InMemoryRescsAdapter(RescsAdapter):
         with self._lock:
             self._resources.clear()
             self._runtimes.clear()
+            self._devices.clear()
+
+    def persist_device(self, device: dict[str, Any]) -> None:
+        snapshot = _validate_device_dict(device)
+        with self._lock:
+            self._devices[snapshot["device_id"]] = snapshot
+
+    def fetch_device(self, device_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            found = self._devices.get(device_id)
+            return json.loads(json.dumps(found)) if found is not None else None
+
+    def delete_device(self, device_id: str) -> None:
+        with self._lock:
+            self._devices.pop(device_id, None)
+
+    def list_devices(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [json.loads(json.dumps(d)) for d in self._devices.values()]
 
 
 class FileRescsAdapter(RescsAdapter):
@@ -157,6 +210,13 @@ class FileRescsAdapter(RescsAdapter):
                         )
                     except Exception:
                         pass
+                if item.get("registered_at"):
+                    try:
+                        resource.registered_at = datetime.fromisoformat(  # type: ignore
+                            item["registered_at"]
+                        )
+                    except Exception:
+                        pass
                 self._memory.persist_resource(resource)
             except Exception:
                 continue
@@ -183,10 +243,19 @@ class FileRescsAdapter(RescsAdapter):
             except Exception:
                 continue
 
+        # Hydrate registered device identities (tolerate per-item corruption)
+        for item in data.get("devices", []):
+            try:
+                if isinstance(item, dict) and item.get("device_id"):
+                    self._memory.persist_device(item)
+            except Exception:
+                continue
+
     def _save(self) -> None:
         data = {
             "resources": [r.to_dict() for r in self._memory.list_resources()],
             "runtimes": [r.to_dict() for r in self._memory.list_runtimes()],
+            "devices": self._memory.list_devices(),
         }
         # Atomic write via temp file
         temp = self._path.with_suffix(self._path.suffix + ".tmp")
@@ -224,6 +293,24 @@ class FileRescsAdapter(RescsAdapter):
     def list_runtimes(self) -> list[RuntimeRecord]:
         with self._lock:
             return self._memory.list_runtimes()
+
+    def persist_device(self, device: dict[str, Any]) -> None:
+        with self._lock:
+            self._memory.persist_device(device)
+            self._save()
+
+    def fetch_device(self, device_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            return self._memory.fetch_device(device_id)
+
+    def delete_device(self, device_id: str) -> None:
+        with self._lock:
+            self._memory.delete_device(device_id)
+            self._save()
+
+    def list_devices(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return self._memory.list_devices()
 
     def health(self) -> dict[str, Any]:
         with self._lock:
@@ -264,6 +351,10 @@ class HttpRescsAdapter(RescsAdapter):
       GET    /runtimes           -> {runtimes:[...]} or [...]
       GET    /health             -> {healthy:bool, resources:int, runtimes:int}
       POST   /clear
+      POST   /devices            {device identity dict}
+      GET    /devices            -> {devices:[...]} or [...]
+      GET    /devices/{id}       -> {device dict} or 404
+      DELETE /devices/{id}
     """
 
     def __init__(
@@ -525,6 +616,7 @@ class HttpRescsAdapter(RescsAdapter):
                     "healthy": True,
                     "resources": len(self._fallback.list_resources()),
                     "runtimes": len(self._fallback.list_runtimes()),
+                    "devices": len(self._fallback.list_devices()),
                 }
             except Exception as exc:
                 self._last_error = str(exc)
@@ -536,7 +628,88 @@ class HttpRescsAdapter(RescsAdapter):
                     "error": str(exc),
                     "fallback_resources": len(self._fallback.list_resources()),
                     "fallback_runtimes": len(self._fallback.list_runtimes()),
+                    "fallback_devices": len(self._fallback.list_devices()),
                 }
+
+    def persist_device(self, device: dict[str, Any]) -> None:
+        snapshot = _validate_device_dict(device)
+        with self._lock:
+            self._fallback.persist_device(snapshot)
+            try:
+                self._request("POST", "/devices", snapshot)
+                self._last_error = None
+                self._healthy = True
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._healthy = False
+                if not self._fallback_enabled:
+                    raise
+
+    def fetch_device(self, device_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            try:
+                result = self._request("GET", f"/devices/{device_id}")
+                if result is None:
+                    return self._fallback.fetch_device(device_id) if self._fallback_enabled else None
+                if isinstance(result, dict) and "device" in result and isinstance(result["device"], dict):
+                    result = result["device"]
+                if isinstance(result, dict) and result.get("device_id"):
+                    self._last_error = None
+                    self._healthy = True
+                    return result
+                return self._fallback.fetch_device(device_id) if self._fallback_enabled else None
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._healthy = False
+                if self._fallback_enabled:
+                    return self._fallback.fetch_device(device_id)
+                raise
+
+    def delete_device(self, device_id: str) -> None:
+        with self._lock:
+            self._fallback.delete_device(device_id)
+            try:
+                self._request("DELETE", f"/devices/{device_id}")
+                self._last_error = None
+                self._healthy = True
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._healthy = False
+                if not self._fallback_enabled:
+                    raise
+
+    def list_devices(self) -> list[dict[str, Any]]:
+        with self._lock:
+            try:
+                result = self._request("GET", "/devices")
+                if result is None:
+                    return self._fallback.list_devices()
+                raw_list = None
+                if isinstance(result, list):
+                    raw_list = result
+                elif isinstance(result, dict):
+                    for key in ("devices", "data", "items"):
+                        if key in result and isinstance(result[key], list):
+                            raw_list = result[key]
+                            break
+                    if raw_list is None and result.get("device_id"):
+                        raw_list = [result]
+                if raw_list is not None:
+                    self._last_error = None
+                    self._healthy = True
+                    out: list[dict[str, Any]] = []
+                    for item in raw_list:
+                        try:
+                            if isinstance(item, dict) and item.get("device_id"):
+                                out.append(item)
+                        except Exception:
+                            continue
+                    return out
+                return self._fallback.list_devices()
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._healthy = False
+                return self._fallback.list_devices()
 
     def clear(self) -> None:
         with self._lock:
@@ -548,6 +721,10 @@ class HttpRescsAdapter(RescsAdapter):
                 except Exception:
                     self._request("DELETE", "/resources")
                     self._request("DELETE", "/runtimes")
+                    try:
+                        self._request("DELETE", "/devices")
+                    except Exception:
+                        pass
                 self._last_error = None
                 self._healthy = True
             except Exception as exc:
