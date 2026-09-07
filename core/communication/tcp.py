@@ -4,13 +4,37 @@ import socket
 import struct
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from core.errors import MessageError
 
 from .connection import ConnectionSession, ConnectionState
+from .devices import DeviceRegistry, DeviceRegistryError
 from .models import Message
+from .protocol import (
+    COMMUNICATION_ERROR,
+    DEVICE_ALREADY_REGISTERED,
+    DEVICE_DISCOVER,
+    DEVICE_DISCOVER_RESPONSE,
+    DEVICE_ERROR,
+    DEVICE_INFO,
+    DEVICE_INFO_RESPONSE,
+    DEVICE_NOT_FOUND,
+    DEVICE_NOT_REGISTERED,
+    DEVICE_REGISTER,
+    DEVICE_REGISTER_RESPONSE,
+    DEVICE_REGISTRATION_FAILED,
+    DEVICE_STATUS_OFFLINE,
+    DEVICE_STATUS_ONLINE,
+    DEVICE_UNAVAILABLE,
+    INVALID_DESTINATION,
+    MINIMUM_TLS_VERSION,
+    SUPPORTED_PROTOCOL_VERSION,
+    build_device_error,
+    validate_registration_payload,
+)
 from .serializer import MessageSerializer
 from .transport import MessageHandler, Transport
 
@@ -59,6 +83,8 @@ class TcpTransport(Transport):
         version_negotiator: Callable[[str | None], str] | None = None,
         version_supported: Callable[[str], bool] | None = None,
         time_func: Callable[[], float] | None = None,
+        device_registry: DeviceRegistry | None = None,
+        event_bus: Any | None = None,
     ) -> None:
         from threading import RLock
 
@@ -150,6 +176,16 @@ class TcpTransport(Transport):
         self._rejected_connections = 0
         self._authentication_failures = 0
         self._protocol_failures = 0
+
+        # Authoritative device layer (one record per device_id).
+        self._devices = device_registry or DeviceRegistry()
+        self._event_bus = event_bus
+        # device_id -> [conn socket, write RLock, connection_id]
+        self._device_sockets: dict[str, list] = {}
+        self._device_registration_failures = 0
+        self._device_routing_failures = 0
+        self._device_discovery_requests = 0
+        self._device_messages_routed = 0
 
         self._server_socket: socket.socket | None = None
         self._server_thread: threading.Thread | None = None
@@ -250,6 +286,12 @@ class TcpTransport(Transport):
             self._stop_event.set()
         self._close_all_connections()
         self._stop_server()
+        try:
+            self._devices.mark_all_offline()
+        except Exception:
+            pass
+        with self._lock:
+            self._device_sockets.clear()
 
     @property
     def is_running(self) -> bool:
@@ -351,6 +393,15 @@ class TcpTransport(Transport):
             self._rejected_connections = 0
             self._authentication_failures = 0
             self._protocol_failures = 0
+            self._device_sockets.clear()
+            self._device_registration_failures = 0
+            self._device_routing_failures = 0
+            self._device_discovery_requests = 0
+            self._device_messages_routed = 0
+        try:
+            self._devices.clear()
+        except Exception:
+            pass
 
     def count(self) -> int:
         return self.endpoint_count()
@@ -387,6 +438,133 @@ class TcpTransport(Transport):
     def protocol_failures(self) -> int:
         with self._lock:
             return self._protocol_failures
+
+    # -- device registry + presence + metrics (additive API) ---------------
+
+    @property
+    def device_registry(self) -> DeviceRegistry:
+        """Return the authoritative device registry."""
+        return self._devices
+
+    def registered_devices(self) -> int:
+        """Return the number of registered devices (online + offline)."""
+        try:
+            return self._devices.registered_count()
+        except Exception:
+            return 0
+
+    def online_devices(self) -> int:
+        """Return the number of online devices."""
+        try:
+            return self._devices.online_count()
+        except Exception:
+            return 0
+
+    def offline_devices(self) -> int:
+        """Return the number of offline devices."""
+        try:
+            return self._devices.offline_count()
+        except Exception:
+            return 0
+
+    def device_registration_failures(self) -> int:
+        with self._lock:
+            return self._device_registration_failures
+
+    def device_routing_failures(self) -> int:
+        with self._lock:
+            return self._device_routing_failures
+
+    def device_discovery_requests(self) -> int:
+        with self._lock:
+            return self._device_discovery_requests
+
+    def device_messages_routed(self) -> int:
+        with self._lock:
+            return self._device_messages_routed
+
+    def device_metrics(self) -> dict:
+        """Return the device-layer observability snapshot."""
+        with self._lock:
+            routing_failures = self._device_routing_failures
+            registration_failures = self._device_registration_failures
+            discovery_requests = self._device_discovery_requests
+            messages_routed = self._device_messages_routed
+        return {
+            "registered_devices": self.registered_devices(),
+            "online_devices": self.online_devices(),
+            "offline_devices": self.offline_devices(),
+            "device_registration_failures": registration_failures,
+            "device_routing_failures": routing_failures,
+            "device_discovery_requests": discovery_requests,
+            "device_messages_routed": messages_routed,
+        }
+
+    def get_device(self, device_id: str) -> dict | None:
+        """Return the discovery entry for a device, or None."""
+        try:
+            return self._devices.get(device_id).to_discovery_entry()
+        except Exception:
+            return None
+
+    def deliver_to_device(self, message: Message) -> None:
+        """Deliver a device-addressed message to its live socket.
+
+        Used by :meth:`Router.route_to_device` for in-process device
+        delivery. Validates destination existence / online presence /
+        active binding and preserves message identity. Raises
+        :class:`MessageError` deterministically when undeliverable.
+        """
+        from core.errors import MessageError as _MessageError
+
+        destination = message.destination
+        if not isinstance(destination, str) or not destination.strip():
+            raise _MessageError("INVALID_DESTINATION: destination must not be empty.")
+        try:
+            record = self._devices.get(destination)
+        except Exception as exc:
+            raise _MessageError(
+                f"DEVICE_NOT_FOUND: unknown destination {destination!r}."
+            ) from exc
+        with self._lock:
+            binding = self._device_sockets.get(destination)
+            binding_cid = binding[2] if binding else None
+        if (
+            record.status != DEVICE_STATUS_ONLINE
+            or record.connection_id is None
+            or binding is None
+            or binding_cid != record.connection_id
+        ):
+            raise _MessageError(
+                f"DEVICE_UNAVAILABLE: destination {destination!r} is offline."
+            )
+        dest_conn, dest_lock, _dest_cid = binding
+        try:
+            with dest_lock:
+                text = MessageSerializer.serialize(message)
+                data = text.encode("utf-8")
+                if len(data) == 0 or len(data) > MAX_FRAME_SIZE:
+                    raise _MessageError("Forwarded frame size invalid.")
+                dest_conn.sendall(struct.pack("!I", len(data)) + data)
+        except _MessageError:
+            raise
+        except Exception as exc:
+            raise _MessageError("Failed to deliver device message.") from exc
+        with self._lock:
+            self._device_messages_routed += 1
+        return None
+
+    def list_devices(self, *, include_offline: bool = True) -> list[dict]:
+        """Return discovery entries for registered devices."""
+        try:
+            return [
+                record.to_discovery_entry()
+                for record in self._devices.list_devices(
+                    include_offline=include_offline
+                )
+            ]
+        except Exception:
+            return []
 
     def _register_session(
         self, session: ConnectionSession, has_reservation: bool = False
@@ -595,6 +773,10 @@ class TcpTransport(Transport):
                 self._serve_legacy(conn, session)
         finally:
             try:
+                self._cleanup_device_binding(session)
+            except Exception:
+                pass
+            try:
                 try:
                     conn.shutdown(socket.SHUT_RDWR)
                 except Exception:
@@ -692,9 +874,36 @@ class TcpTransport(Transport):
                     return
                 session.messages_received += 1
                 session.touch(self._time())
+                # Device-layer protocol interception. Returns True when the
+                # message was fully handled (response already framed).
+                # Returns "close" when the connection must be terminated
+                # after the error response (protocol/security violation).
+                try:
+                    disposition = self._dispatch_device_message(conn, session, message)
+                except Exception:
+                    with self._lock:
+                        self._protocol_failures += 1
+                    return
+                if disposition == "close":
+                    return
+                if disposition == "handled":
+                    continue
                 try:
                     response = self.send(message)
                 except MessageError:
+                    # Registered devices get a graceful device error for
+                    # unroutable destinations; unregistered senders keep the
+                    # legacy strict close behavior.
+                    if self._is_session_device_registered(session):
+                        self._record_routing_failure()
+                        self._send_device_error(
+                            conn,
+                            session,
+                            message,
+                            DEVICE_NOT_FOUND,
+                            "Destination device was not found.",
+                        )
+                        continue
                     with self._lock:
                         self._protocol_failures += 1
                     return
@@ -831,6 +1040,405 @@ class TcpTransport(Transport):
         if message.source != session.identity_id:
             raise MessageError("source mismatch.")
 
+    # -- device protocol -----------------------------------------------------
+
+    def _is_session_device_registered(self, session: ConnectionSession) -> bool:
+        """Return whether this connection completed DEVICE_REGISTER."""
+        try:
+            record = self._devices.find_by_connection(session.connection_id)
+        except Exception:
+            return False
+        return record is not None and record.status == DEVICE_STATUS_ONLINE
+
+    def _record_registration_failure(self) -> None:
+        with self._lock:
+            self._device_registration_failures += 1
+            self._protocol_failures += 1
+
+    def _record_routing_failure(self) -> None:
+        with self._lock:
+            self._device_routing_failures += 1
+
+    def _emit_device_event(
+        self, event_type: str, device_id: str, extra: dict | None = None
+    ) -> None:
+        bus = self._event_bus
+        if bus is None:
+            return
+        try:
+            payload = {"device_id": device_id, "resource_id": device_id}
+            if extra:
+                payload.update(extra)
+            emit = getattr(bus, "emit", None)
+            if callable(emit):
+                emit(event_type, "communication", payload)
+        except Exception:
+            pass
+
+    def _send_message_frame(
+        self, conn: socket.socket, session: ConnectionSession, message: Message
+    ) -> bool:
+        """Frame one message to a socket. Returns False on transport failure."""
+        try:
+            self._send_frame(conn, message)
+        except Exception:
+            return False
+        try:
+            session.messages_sent += 1
+            session.touch(self._time())
+        except Exception:
+            pass
+        return True
+
+    def _send_device_error(
+        self,
+        conn: socket.socket,
+        session: ConnectionSession,
+        request: Message,
+        error_code: str,
+        human_message: str,
+    ) -> None:
+        """Send a DEVICE_ERROR envelope preserving the request ID."""
+        request_id = request.request_id or request.message_id
+        try:
+            destination = session.identity_id or request.source
+        except Exception:
+            destination = request.source
+        error_message = Message(
+            source="core",
+            destination=destination,
+            message_type=DEVICE_ERROR,
+            payload=build_device_error(error_code, human_message, request_id),
+            request_id=request.message_id,
+            identity_id=request.identity_id,
+        )
+        self._send_message_frame(conn, session, error_message)
+
+    def _dispatch_device_message(
+        self, conn: socket.socket, session: ConnectionSession, message: Message
+    ) -> str | None:
+        """Handle device-protocol and device-routed messages.
+
+        Returns ``"handled"`` when a response was framed, ``"close"`` when
+        the connection must be terminated after the response, or ``None``
+        when the caller should fall back to endpoint dispatch.
+        """
+        mtype = message.message_type
+        if mtype == DEVICE_REGISTER:
+            return self._handle_device_register(conn, session, message)
+        if mtype in (DEVICE_DISCOVER, DEVICE_INFO):
+            return self._handle_device_query(conn, session, message)
+        if mtype == DEVICE_ERROR:
+            # Never route error envelopes as application traffic.
+            return "handled"
+        # Device-to-device routing: destination names a known device.
+        try:
+            known = self._devices.has(message.destination)
+        except Exception:
+            known = False
+        if known:
+            return self._handle_device_routed(conn, session, message)
+        # Registered sender naming an unknown destination gets a graceful
+        # device error instead of a legacy connection teardown.
+        if message.destination and self._is_session_device_registered(session):
+            with self._lock:
+                has_endpoint = message.destination in self._handlers
+            if not has_endpoint:
+                self._record_routing_failure()
+                if not message.destination.strip():
+                    self._send_device_error(
+                        conn, session, message,
+                        INVALID_DESTINATION, "Destination must not be empty.",
+                    )
+                else:
+                    self._send_device_error(
+                        conn, session, message,
+                        DEVICE_NOT_FOUND, "Destination device was not found.",
+                    )
+                return "handled"
+        return None
+
+    def _handle_device_register(
+        self, conn: socket.socket, session: ConnectionSession, message: Message
+    ) -> str:
+        """Process DEVICE_REGISTER. Returns 'handled' or 'close'."""
+        payload = message.payload if isinstance(message.payload, dict) else None
+        if payload is None:
+            self._record_registration_failure()
+            self._send_device_error(
+                conn, session, message,
+                DEVICE_REGISTRATION_FAILED, "Invalid payload structure.",
+            )
+            return "close"
+        code, detail = validate_registration_payload(payload)
+        if code is not None:
+            self._record_registration_failure()
+            self._send_device_error(
+                conn, session, message, code, detail or "Invalid registration."
+            )
+            return "close"
+        device_id = payload["device_id"]
+        # Authenticated identity MUST equal the registering device identity.
+        if session.identity_id != device_id:
+            self._record_registration_failure()
+            with self._lock:
+                self._authentication_failures += 1
+            self._send_device_error(
+                conn, session, message,
+                DEVICE_REGISTRATION_FAILED,
+                "Authenticated identity does not match device_id.",
+            )
+            return "close"
+        try:
+            record = self._devices.register_payload(
+                payload,
+                identity_id=session.identity_id,
+                connection_id=session.connection_id,
+            )
+        except DeviceRegistryError as exc:
+            self._record_registration_failure()
+            err_code = exc.code or DEVICE_REGISTRATION_FAILED
+            self._send_device_error(conn, session, message, err_code, str(exc))
+            # Duplicate active registration and validation failures both
+            # terminate this connection without touching the live binding.
+            return "close"
+        except Exception:
+            self._record_registration_failure()
+            self._send_device_error(
+                conn, session, message,
+                DEVICE_REGISTRATION_FAILED, "Device registration failed.",
+            )
+            return "close"
+        # Bind the live socket for device-to-device delivery.
+        from threading import RLock as _RLock
+
+        with self._lock:
+            self._device_sockets[device_id] = [conn, _RLock(), session.connection_id]
+        try:
+            self._devices.update_last_seen(device_id)
+        except Exception:
+            pass
+        self._emit_device_event(
+            "DEVICE_CONNECTED",
+            device_id,
+            {
+                "device_name": record.device_name,
+                "connection_id": session.connection_id,
+                "identity_id": session.identity_id,
+            },
+        )
+        response = Message(
+            source="core",
+            destination=device_id,
+            message_type=DEVICE_REGISTER_RESPONSE,
+            payload={
+                "registered": True,
+                "device_id": device_id,
+                "status": DEVICE_STATUS_ONLINE,
+            },
+            request_id=message.message_id,
+            identity_id=message.identity_id,
+        )
+        self._send_message_frame(conn, session, response)
+        return "handled"
+
+    def _handle_device_query(
+        self, conn: socket.socket, session: ConnectionSession, message: Message
+    ) -> str:
+        """Process DEVICE_DISCOVER / DEVICE_INFO. Returns 'handled'."""
+        if not self._is_session_device_registered(session):
+            self._record_routing_failure()
+            self._send_device_error(
+                conn, session, message,
+                DEVICE_NOT_REGISTERED,
+                "Device must register before discovery.",
+            )
+            return "handled"
+        if message.message_type == DEVICE_DISCOVER:
+            with self._lock:
+                self._device_discovery_requests += 1
+            try:
+                self._devices.update_last_seen(session.identity_id or "")
+            except Exception:
+                pass
+            try:
+                devices = [
+                    record.to_discovery_entry()
+                    for record in self._devices.list_devices(include_offline=True)
+                ]
+            except Exception:
+                devices = []
+            response = Message(
+                source="core",
+                destination=session.identity_id or message.source,
+                message_type=DEVICE_DISCOVER_RESPONSE,
+                payload={"devices": devices},
+                request_id=message.message_id,
+                identity_id=message.identity_id,
+            )
+            self._send_message_frame(conn, session, response)
+            return "handled"
+        # DEVICE_INFO
+        payload = message.payload if isinstance(message.payload, dict) else {}
+        target = payload.get("device_id") if isinstance(payload, dict) else None
+        with self._lock:
+            self._device_discovery_requests += 1
+        if not isinstance(target, str) or not target.strip():
+            self._record_routing_failure()
+            self._send_device_error(
+                conn, session, message,
+                INVALID_DESTINATION, "device_id must not be empty.",
+            )
+            return "handled"
+        try:
+            record = self._devices.get(target)
+        except Exception:
+            self._record_routing_failure()
+            self._send_device_error(
+                conn, session, message,
+                DEVICE_NOT_FOUND, "Destination device was not found.",
+            )
+            return "handled"
+        try:
+            self._devices.update_last_seen(session.identity_id or "")
+        except Exception:
+            pass
+        response = Message(
+            source="core",
+            destination=session.identity_id or message.source,
+            message_type=DEVICE_INFO_RESPONSE,
+            payload={"device": record.to_info_entry()},
+            request_id=message.message_id,
+            identity_id=message.identity_id,
+        )
+        self._send_message_frame(conn, session, response)
+        return "handled"
+
+    def _handle_device_routed(
+        self, conn: socket.socket, session: ConnectionSession, message: Message
+    ) -> str:
+        """Forward a device-to-device message. Returns 'handled'."""
+        # Check 6: source must be the authenticated source identity
+        # (already enforced upstream; re-checked defensively).
+        if message.source != session.identity_id or message.identity_id != session.identity_id:
+            self._record_routing_failure()
+            with self._lock:
+                self._protocol_failures += 1
+            self._send_device_error(
+                conn, session, message,
+                COMMUNICATION_ERROR, "Source identity mismatch.",
+            )
+            return "handled"
+        # Sender must be registered.
+        if not self._is_session_device_registered(session):
+            self._record_routing_failure()
+            self._send_device_error(
+                conn, session, message,
+                DEVICE_NOT_REGISTERED,
+                "Device must register before sending messages.",
+            )
+            return "handled"
+        destination = message.destination
+        # Check 1: destination must not be empty.
+        if not isinstance(destination, str) or not destination.strip():
+            self._record_routing_failure()
+            self._send_device_error(
+                conn, session, message,
+                INVALID_DESTINATION, "Destination must not be empty.",
+            )
+            return "handled"
+        # Check 2: destination must exist.
+        try:
+            record = self._devices.get(destination)
+        except Exception:
+            self._record_routing_failure()
+            self._send_device_error(
+                conn, session, message,
+                DEVICE_NOT_FOUND, "Destination device was not found.",
+            )
+            return "handled"
+        # Check 3/4: online with an active connection.
+        with self._lock:
+            binding = self._device_sockets.get(destination)
+            binding_cid = binding[2] if binding else None
+        if (
+            record.status != DEVICE_STATUS_ONLINE
+            or record.connection_id is None
+            or binding is None
+            or binding_cid != record.connection_id
+        ):
+            self._record_routing_failure()
+            self._send_device_error(
+                conn, session, message,
+                DEVICE_UNAVAILABLE, "Destination device is unavailable.",
+            )
+            return "handled"
+        # Check 5: binding corresponds to the registered device (verified
+        # above via connection_id equality).
+        forwarded = Message(
+            source=message.source,
+            destination=message.destination,
+            message_type=message.message_type,
+            payload=dict(message.payload) if isinstance(message.payload, dict) else {},
+            message_id=message.message_id,
+            timestamp=message.timestamp,
+            request_id=message.request_id,
+            identity_id=message.identity_id,
+        )
+        dest_conn, dest_lock, _dest_cid = binding
+        try:
+            with dest_lock:
+                text = MessageSerializer.serialize(forwarded)
+                data = text.encode("utf-8")
+                if len(data) == 0 or len(data) > MAX_FRAME_SIZE:
+                    raise MessageError("Forwarded frame size invalid.")
+                dest_conn.sendall(struct.pack("!I", len(data)) + data)
+        except Exception:
+            self._record_routing_failure()
+            self._send_device_error(
+                conn, session, message,
+                COMMUNICATION_ERROR, "Failed to deliver message.",
+            )
+            return "handled"
+        with self._lock:
+            self._device_messages_routed += 1
+        try:
+            now = datetime.now(timezone.utc)
+            self._devices.update_last_seen(message.source, now)
+            self._devices.update_last_seen(destination, now)
+        except Exception:
+            pass
+        session.touch(self._time())
+        return "handled"
+
+    def _cleanup_device_binding(self, session: ConnectionSession) -> None:
+        """Mark the session's device offline (race-safe) and free its slot."""
+        record = None
+        try:
+            record = self._devices.find_by_connection(session.connection_id)
+        except Exception:
+            record = None
+        if record is None:
+            return
+        device_id = record.device_id
+        connection_id = session.connection_id
+        with self._lock:
+            binding = self._device_sockets.get(device_id)
+            if binding is not None and binding[2] != connection_id:
+                # A newer connection replaced this one; leave it alone.
+                return
+            if binding is not None:
+                self._device_sockets.pop(device_id, None)
+        try:
+            self._devices.mark_offline(device_id, connection_id)
+        except Exception:
+            pass
+        self._emit_device_event(
+            "DEVICE_DISCONNECTED",
+            device_id,
+            {"connection_id": connection_id},
+        )
+
     # -- framing I/O -------------------------------------------------------
 
     def _wait_readable(self, conn: socket.socket, session: ConnectionSession) -> bool:
@@ -904,6 +1512,15 @@ __all__ = [
     "HEADER_SIZE",
     "TLS_HANDSHAKE_TIMEOUT",
     "IDLE_CONNECTION_TIMEOUT",
+    "MINIMUM_TLS_VERSION",
+    "SUPPORTED_PROTOCOL_VERSION",
     "HANDSHAKE_TYPE",
     "HANDSHAKE_RESPONSE_TYPE",
+    "DEVICE_REGISTER",
+    "DEVICE_REGISTER_RESPONSE",
+    "DEVICE_DISCOVER",
+    "DEVICE_DISCOVER_RESPONSE",
+    "DEVICE_INFO",
+    "DEVICE_INFO_RESPONSE",
+    "DEVICE_ERROR",
 ]

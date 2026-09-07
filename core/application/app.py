@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from core.communication import LocalCommunication
+from core.communication.devices import DeviceRegistry
 from core.configuration import ConfigurationManager
 from core.dependencies import DependencyManager
 from core.events import (
@@ -91,6 +92,11 @@ class CoreApplication:
         self.security_policy = SecurityPolicy()
         self.services = ServiceManager()
         self.routing = Router(self.communication)
+        # Authoritative device registry shared by routing and (once a TCP
+        # transport is selected) the network layer. Backed by the resource
+        # registry so device state stays single-sourced.
+        self.device_registry = DeviceRegistry(resource_registry=self.resources)
+        self.routing.set_device_registry(self.device_registry)
         self.dispatcher = ServiceDispatcher(
             self.services,
             security=self.security,
@@ -639,6 +645,8 @@ class CoreApplication:
                 cafile=tls_ca,
                 require_client_cert=bool(tls_require),
                 security_manager=self.security,
+                device_registry=self.device_registry,
+                event_bus=self.events,
             )
 
             # Preserve any already-registered endpoints by migrating them.
@@ -1904,6 +1912,7 @@ class CoreApplication:
             "events": self._check_events,
             "communication": self._check_communication,
             "routing": self._check_routing,
+            "devices": self._check_devices,
             "health": self._check_health,
             "rescs": self._check_rescs,
             "services": self._check_services,
@@ -2042,6 +2051,44 @@ class CoreApplication:
             status=HealthStatus.HEALTHY,
             message="Health monitor is available.",
         )
+
+    def _check_devices(self) -> HealthResult:
+        try:
+            registered = self.device_registry.registered_count()
+            online = self.device_registry.online_count()
+        except Exception:
+            registered, online = 0, 0
+        return HealthResult(
+            component_id="devices",
+            status=HealthStatus.HEALTHY,
+            message=f"Devices registered={registered} online={online}.",
+        )
+
+    def device_metrics(self) -> dict:
+        """Return device-layer observability, merging transport counters."""
+        try:
+            base = {
+                "registered_devices": self.device_registry.registered_count(),
+                "online_devices": self.device_registry.online_count(),
+                "offline_devices": self.device_registry.offline_count(),
+            }
+        except Exception:
+            base = {
+                "registered_devices": 0,
+                "online_devices": 0,
+                "offline_devices": 0,
+            }
+        transport_metrics = {}
+        metrics_fn = getattr(self.communication, "device_metrics", None)
+        if callable(metrics_fn):
+            try:
+                transport_metrics = dict(metrics_fn())
+            except Exception:
+                transport_metrics = {}
+        merged = dict(base)
+        for key, value in transport_metrics.items():
+            merged.setdefault(key, value)
+        return merged
 
     def _check_services(self) -> HealthResult:
         running = [
