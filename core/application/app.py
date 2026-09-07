@@ -120,6 +120,12 @@ class CoreApplication:
         # Default to InMemory unless an adapter is injected. Config-driven
         # selection happens in _apply_rescs_policy after configuration loads.
         self.rescs: RescsAdapter = rescs_adapter or InMemoryRescsAdapter()
+        # Device persistence starts against the initial adapter; the
+        # R.E.S.C.S. policy re-attaches it if the adapter changes.
+        try:
+            self.device_registry.set_device_store(self.rescs)
+        except Exception:
+            pass
 
         self._initialized = False
         self._disabled_components: set[str] = set()
@@ -412,6 +418,7 @@ class CoreApplication:
             self._apply_security_policy()
             self._apply_transport_policy()
             self._apply_rescs_policy()
+            self._restore_persisted_devices()
             return
 
         self.configuration.load(path, environment=self._environment)
@@ -436,6 +443,7 @@ class CoreApplication:
         self._apply_security_policy()
         self._apply_transport_policy()
         self._apply_rescs_policy()
+        self._restore_persisted_devices()
 
     def _apply_security_policy(self) -> None:
         """
@@ -790,6 +798,71 @@ class CoreApplication:
                 self.rescs = InMemoryRescsAdapter()
             except Exception:
                 pass
+
+    def _restore_persisted_devices(self) -> None:
+        """Restore persisted device identities (offline) + credentials.
+
+        Runs after the R.E.S.C.S. policy so the active adapter is known.
+        Restored devices start offline with no connection; only a fresh
+        authentication + DEVICE_REGISTER brings them online. Security
+        identities are re-provisioned (without overwriting existing ones)
+        so restored devices can authenticate on reconnect.
+        """
+        try:
+            self.device_registry.set_device_store(self.rescs)
+        except Exception:
+            pass
+        try:
+            list_devices = getattr(self.rescs, "list_devices", None)
+            stored = list_devices() if callable(list_devices) else []
+        except Exception:
+            stored = []
+        if not stored:
+            return
+        try:
+            restored = self.device_registry.restore_all(stored)
+        except Exception as exc:
+            self.logger.warning(f"Failed to restore persisted devices: {exc}")
+            return
+        reprovisioned = 0
+        for item in stored:
+            try:
+                if not isinstance(item, dict) or not item.get("device_id"):
+                    continue
+                device_id = item["device_id"]
+                try:
+                    self.security.get_identity(device_id)
+                    continue  # operator-provisioned identity wins
+                except Exception:
+                    pass
+                from core.security.models import Identity, IdentityType
+
+                permissions = set()
+                for name in item.get("permissions", []) or []:
+                    try:
+                        permissions.add(Permission(str(name)))
+                    except Exception:
+                        continue
+                if not permissions:
+                    permissions.add(Permission.READ)
+                token = item.get("token")
+                metadata = {"token": token} if isinstance(token, str) and token else {}
+                self.security.register_identity(
+                    Identity(
+                        identity_id=device_id,
+                        name=item.get("device_name") or device_id,
+                        identity_type=IdentityType.DEVICE,
+                        permissions=frozenset(permissions),
+                        metadata=metadata,
+                    )
+                )
+                reprovisioned += 1
+            except Exception:
+                continue
+        self.logger.info(
+            f"Restored {restored} persisted device(s); "
+            f"re-provisioned {reprovisioned} identit(ies)."
+        )
 
     def _apply_component_policy(self) -> None:
         """

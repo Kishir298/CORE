@@ -1186,6 +1186,42 @@ class TcpTransport(Transport):
                 return "handled"
         return None
 
+    def _identity_token(self, identity_id: str) -> str | None:
+        """Return the stored auth token for an identity, if any."""
+        manager = self._security_manager
+        if manager is None:
+            return None
+        try:
+            identity = manager.get_identity(identity_id)
+        except Exception:
+            return None
+        try:
+            metadata = dict(getattr(identity, "metadata", {}) or {})
+        except Exception:
+            return None
+        for key in ("token", "credential", "api_token", "password"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    def _identity_permissions(self, identity_id: str) -> list[str]:
+        """Return the permission names for an identity, if known."""
+        manager = self._security_manager
+        if manager is None:
+            return []
+        try:
+            identity = manager.get_identity(identity_id)
+            permissions = getattr(identity, "permissions", None) or []
+            names = []
+            for permission in permissions:
+                value = getattr(permission, "value", permission)
+                if isinstance(value, str) and value:
+                    names.append(value)
+            return names
+        except Exception:
+            return []
+
     def _handle_device_register(
         self, conn: socket.socket, session: ConnectionSession, message: Message
     ) -> str:
@@ -1244,6 +1280,16 @@ class TcpTransport(Transport):
             self._device_sockets[device_id] = [conn, _RLock(), session.connection_id]
         try:
             self._devices.update_last_seen(device_id)
+        except Exception:
+            pass
+        # Persist the identity (with credentials) so it survives restarts.
+        # Best-effort: persist_identity never raises.
+        try:
+            self._devices.persist_identity(
+                device_id,
+                token=self._identity_token(device_id),
+                permissions=self._identity_permissions(device_id),
+            )
         except Exception:
             pass
         self._emit_device_event(
