@@ -117,3 +117,14 @@ CORE/
 ## Security
 
 No hardcoded credentials. `TokenAuthenticationProvider` checks `identity.metadata["token"]` against message payload `credential`/`token`/`_credential`. Enforcement disabled until `security.enforce_authorization: true`.
+
+## External-Device Communication
+
+External TCP requires TLS. External devices authenticate before application messages.
+Connections are persistent. Maximum frame size is 10 MB. Maximum active connections is 64.
+Idle connections expire after 300 seconds. TLS handshake timeout is 5 seconds.
+
+* `0.0.0.0` binding fails closed without valid TLS (no plaintext downgrade); `127.0.0.1` keeps legacy plaintext for local operation/tests.
+* Handshake: `CORE_HANDSHAKE {identity_id, credential, protocol_version}` → `CORE_HANDSHAKE_RESPONSE {authenticated, identity_id, protocol_version, connection_id}` using existing `Message` format + `core.version` negotiation.
+* Every application message must carry `identity_id == connection.identity_id` and `source == connection.identity_id`; violations close the connection.
+* States: `CONNECTED → TLS_ESTABLISHED → AUTHENTICATING → AUTHENTICATED → CLOSING → CLOSED`.

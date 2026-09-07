@@ -49,3 +49,12 @@ Test-NetConnection -ComputerName 127.0.0.1 -Port 5000
 
 On failure, C.O.R.E. falls back to `127.0.0.1` with a warning when
 `network.enabled` is not `true`.
+
+## External-device hardening
+
+External TCP requires TLS. External devices authenticate before application messages.
+Connections are persistent. Maximum frame size is 10 MB. Maximum active connections is 64.
+Idle connections expire after 300 seconds. TLS handshake timeout is 5 seconds.
+
+External `0.0.0.0` listeners fail closed when TLS is missing or invalid —
+they never silently downgrade to plaintext.
