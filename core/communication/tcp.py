@@ -99,6 +99,27 @@ class TcpTransport(Transport):
                 _ = exc
 
         self._security_manager = security_manager
+        # External binding mandates credential-based auth — fail closed.
+        # Localhost keeps legacy behavior (handshake disabled without a
+        # security manager; existence provider tolerated).
+        if self.is_external:
+            provider = (
+                getattr(security_manager, "provider", None)
+                if security_manager is not None
+                else None
+            )
+            provider_name = (
+                type(provider).__name__ if provider is not None else "None"
+            )
+            if security_manager is None or provider_name in (
+                "ExistenceAuthenticationProvider",
+                "None",
+            ):
+                raise ValueError(
+                    "External TCP (0.0.0.0) requires a credential-based "
+                    "authentication provider (TokenAuthenticationProvider); "
+                    f"got {provider_name}."
+                )
         self._version_negotiator = version_negotiator
         self._version_supported = version_supported
         if self._version_negotiator is None or self._version_supported is None:
@@ -121,7 +142,10 @@ class TcpTransport(Transport):
         self._messages_received = 0
 
         # Hardened session registry + metrics.
+        # _reserved counts connections admitted but not yet registered,
+        # so reserved + active can never exceed MAX_CONNECTIONS.
         self._connections: dict[str, ConnectionSession] = {}
+        self._reserved = 0
         self._total_connections = 0
         self._rejected_connections = 0
         self._authentication_failures = 0
@@ -322,6 +346,7 @@ class TcpTransport(Transport):
             self._messages_sent = 0
             self._messages_received = 0
             self._connections.clear()
+            self._reserved = 0
             self._total_connections = 0
             self._rejected_connections = 0
             self._authentication_failures = 0
@@ -363,15 +388,58 @@ class TcpTransport(Transport):
         with self._lock:
             return self._protocol_failures
 
-    def _register_session(self, session: ConnectionSession) -> bool:
-        """Register a session if capacity allows. Returns True if admitted."""
+    def _register_session(
+        self, session: ConnectionSession, has_reservation: bool = False
+    ) -> bool:
+        """Register a session if capacity allows. Returns True if admitted.
+
+        When has_reservation is True the caller already owns one reserved
+        slot (via try_reserve_slot); registration consumes it. Direct
+        callers without a reservation are capped against active + reserved.
+        """
         with self._lock:
-            if len(self._connections) >= MAX_CONNECTIONS:
-                self._rejected_connections += 1
-                return False
+            if session.connection_id in self._connections:
+                return True
+            if has_reservation:
+                if self._reserved > 0:
+                    self._reserved -= 1
+                if len(self._connections) >= MAX_CONNECTIONS:
+                    self._rejected_connections += 1
+                    return False
+            else:
+                if len(self._connections) + self._reserved >= MAX_CONNECTIONS:
+                    self._rejected_connections += 1
+                    return False
             self._connections[session.connection_id] = session
             self._total_connections += 1
             return True
+
+    def try_reserve_slot(self) -> bool:
+        """Atomically reserve one connection slot before expensive work.
+
+        Returns True when the caller owns a reservation; False when the
+        64-slot budget (active + reserved) is exhausted. Rejections
+        increment rejected_connections exactly once here.
+        """
+        with self._lock:
+            if len(self._connections) + self._reserved >= MAX_CONNECTIONS:
+                self._rejected_connections += 1
+                return False
+            self._reserved += 1
+            return True
+
+    def release_reservation(self, count_rejection: bool = False) -> None:
+        """Release a previously reserved slot (e.g. TLS/handshake failure)."""
+        with self._lock:
+            if self._reserved > 0:
+                self._reserved -= 1
+            if count_rejection:
+                self._rejected_connections += 1
+
+    def reserved_slots(self) -> int:
+        """Return admitted-but-not-yet-registered slot count."""
+        with self._lock:
+            return self._reserved
 
     def _remove_session(self, connection_id: str) -> None:
         with self._lock:
@@ -382,6 +450,7 @@ class TcpTransport(Transport):
     def _close_all_connections(self) -> None:
         with self._lock:
             ids = list(self._connections.keys())
+            self._reserved = 0
         for cid in ids:
             self._remove_session(cid)
 
@@ -444,12 +513,9 @@ class TcpTransport(Transport):
                 except OSError:
                     break
 
-                # Enforce connection cap before TLS work.
-                with self._lock:
-                    full = len(self._connections) >= MAX_CONNECTIONS
-                    if full:
-                        self._rejected_connections += 1
-                if full:
+                # Atomic admission: reserve before expensive TLS work so a
+                # concurrent burst can never admit more than 64 total.
+                if not self.try_reserve_slot():
                     try:
                         conn.close()
                     except Exception:
@@ -464,8 +530,9 @@ class TcpTransport(Transport):
                             conn, server_side=True, do_handshake_on_connect=True
                         )
                     except Exception:
-                        with self._lock:
-                            self._rejected_connections += 1
+                        # TLS failure releases the reservation (no session);
+                        # count the rejection exactly once.
+                        self.release_reservation(count_rejection=True)
                         try:
                             conn.close()
                         except Exception:
@@ -474,7 +541,7 @@ class TcpTransport(Transport):
 
                 threading.Thread(
                     target=self._handle_connection,
-                    args=(conn, remote, is_tls),
+                    args=(conn, remote, is_tls, True),
                     daemon=True,
                 ).start()
 
@@ -500,7 +567,11 @@ class TcpTransport(Transport):
     # -- connection handling ----------------------------------------------
 
     def _handle_connection(
-        self, conn: socket.socket, remote_address: str = "", is_tls: bool = False
+        self,
+        conn: socket.socket,
+        remote_address: str = "",
+        is_tls: bool = False,
+        has_reservation: bool = False,
     ) -> None:
         now = self._time()
         session = ConnectionSession(
@@ -511,7 +582,7 @@ class TcpTransport(Transport):
         session.transition(
             ConnectionState.TLS_ESTABLISHED if is_tls else ConnectionState.CONNECTED
         )
-        if not self._register_session(session):
+        if not self._register_session(session, has_reservation=has_reservation):
             try:
                 conn.close()
             except Exception:
@@ -681,10 +752,30 @@ class TcpTransport(Transport):
             with self._lock:
                 self._protocol_failures += 1
             return False
-        # External auth must not use existence-only provider.
+        # External auth must not use existence-only provider, and the
+        # identity must have a credential/token configured: existence
+        # alone never authenticates an external connection.
         provider = getattr(self._security_manager, "provider", None)
         provider_name = type(provider).__name__ if provider is not None else ""
         if provider_name == "ExistenceAuthenticationProvider":
+            with self._lock:
+                self._authentication_failures += 1
+            return False
+        try:
+            identity = self._security_manager.get_identity(str(identity_id))
+        except Exception:
+            with self._lock:
+                self._authentication_failures += 1
+            return False
+        metadata = getattr(identity, "metadata", {}) or {}
+        try:
+            has_token = any(
+                key in metadata
+                for key in ("token", "credential", "api_token", "password")
+            )
+        except Exception:
+            has_token = False
+        if not has_token:
             with self._lock:
                 self._authentication_failures += 1
             return False

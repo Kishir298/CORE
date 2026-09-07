@@ -52,9 +52,14 @@ On failure, C.O.R.E. falls back to `127.0.0.1` with a warning when
 
 ## External-device hardening
 
+Current C.O.R.E. version = 0.3.0.
+
 External TCP requires TLS. External devices authenticate before application messages.
 Connections are persistent. Maximum frame size is 10 MB. Maximum active connections is 64.
 Idle connections expire after 300 seconds. TLS handshake timeout is 5 seconds.
 
 External `0.0.0.0` listeners fail closed when TLS is missing or invalid —
-they never silently downgrade to plaintext.
+they never silently downgrade to plaintext. TLS minimum is 1.2.
+
+External authentication cannot use existence-only authentication:
+`TokenAuthenticationProvider` is required for external-device configuration.

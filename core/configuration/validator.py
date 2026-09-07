@@ -295,6 +295,36 @@ class ConfigurationValidator:
                 if "auto_assign.profile_id" in agent and not isinstance(agent["auto_assign.profile_id"], str):  # flat key fallback
                     errors.append("agent.auto_assign.profile_id must be a string.")
 
+        # External-device boundary: 0.0.0.0 + external TCP must never use
+        # existence-only authentication. Fail closed at validation time.
+        try:
+            network = config.get("network") if config.has("network") else None
+            comm = config.get("communication") if config.has("communication") else None
+            sec = config.get("security") if config.has("security") else None
+            ext = (
+                isinstance(network, dict)
+                and network.get("enabled") is True
+                and isinstance(comm, dict)
+                and str(comm.get("transport", "")).strip().lower()
+                in ("tcp", "network", "external", "loopback")
+                and str(comm.get("host", "")).strip() == "0.0.0.0"
+            )
+            if ext and isinstance(sec, dict):
+                prov = sec.get("provider", sec.get("authentication", {}).get("provider") if isinstance(sec.get("authentication"), dict) else None)
+                if isinstance(prov, str) and prov.strip().lower() in (
+                    "existence",
+                    "allow",
+                    "default",
+                    "none",
+                ):
+                    errors.append(
+                        "security.provider must not be existence-only when "
+                        "external-device networking (0.0.0.0) is enabled; "
+                        "use 'token'."
+                    )
+        except Exception:
+            pass
+
     @staticmethod
     def _validate_components(
         config: Configuration,

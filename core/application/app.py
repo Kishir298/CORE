@@ -445,6 +445,34 @@ class CoreApplication:
                 None,
             )
 
+        # External-device boundary: 0.0.0.0 + external TCP transport must
+        # never use existence-only authentication. Fail closed.
+        external = self._is_external_device_config()
+        if external and provider_name is None:
+            from core.security.provider import (
+                TokenAuthenticationProvider,
+            )
+
+            self.security.set_provider(TokenAuthenticationProvider())
+            self.logger.info(
+                "External-device configuration: using TokenAuthenticationProvider."
+            )
+            return
+
+        if external and isinstance(provider_name, str):
+            normalized = provider_name.strip().lower()
+            if normalized in ("existence", "allow", "default", "none"):
+                raise ValueError(
+                    "External-device configuration (0.0.0.0) cannot use "
+                    "existence-only authentication; configure "
+                    "security.provider: token."
+                )
+            if normalized not in ("token", "credential", "bearer"):
+                raise ValueError(
+                    "External-device configuration (0.0.0.0) requires "
+                    f"security.provider: token; got '{provider_name}'."
+                )
+
         if isinstance(provider_name, str):
             normalized = provider_name.strip().lower()
             try:
@@ -469,6 +497,32 @@ class CoreApplication:
                 self.logger.warning(
                     f"Failed to configure security provider '{provider_name}': {exc}"
                 )
+
+    def _is_external_device_config(self) -> bool:
+        """Return whether config resolves to external-device networking.
+
+        External means network.enabled=true AND an external TCP transport
+        AND communication.host=0.0.0.0. Any lookup failure is treated as
+        non-external (localhost legacy behavior preserved).
+        """
+        try:
+            if not self.configuration.is_running:
+                return False
+            network_enabled = self.configuration.get("network.enabled", False)
+            transport = self.configuration.get("communication.transport", "local")
+            host = self.configuration.get("communication.host", "127.0.0.1")
+        except Exception:
+            return False
+        if network_enabled is not True:
+            return False
+        if not isinstance(transport, str) or transport.strip().lower() not in (
+            "tcp",
+            "network",
+            "external",
+            "loopback",
+        ):
+            return False
+        return isinstance(host, str) and host.strip() == "0.0.0.0"
 
     def _apply_transport_policy(self) -> None:
         """
@@ -616,6 +670,19 @@ class CoreApplication:
                 "TcpTransport not available; falling back to LocalTransport."
             )
         except Exception as exc:
+            # Fail closed for external binding: never silently fall back to
+            # LocalTransport when 0.0.0.0 + network.enabled was requested.
+            try:
+                _raw = str(
+                    self.configuration.get(
+                        "communication.host", "127.0.0.1"
+                    )
+                ).strip()
+                _net = self.configuration.get("network.enabled", False)
+            except Exception:
+                _raw, _net = "127.0.0.1", False
+            if _raw == "0.0.0.0" and _net is True:
+                raise
             self.logger.warning(
                 f"Failed to switch to TcpTransport ({exc}); using LocalTransport."
             )

@@ -35,7 +35,7 @@ Configuration resolves `config/core.yaml` by default; `--config` overrides. Envi
 *   **Agent Scheduler** — `AgentScheduler` (`core/scheduler/scheduler.py:1`) capability-driven `Device → suitable Agent → windows-host` offload, 3 default profiles (`asis-local`, `asis-offload`, `tiviss-compat`), exposed via `agent` service (`assign/release/profiles/assignments`).
 *   **Health / Events** — `HealthMonitor` (`core/health/monitor.py:1`) 13 checks including `agent`/`rescs`, bridges to `EventBus` (`core/events/bus.py:1`).
 
-## Phase Matrix (v0.2.1)
+## Phase Matrix (v0.3.0)
 
 | Phase | Title | Status | Notes |
 |-------|-------|--------|-------|
@@ -51,9 +51,9 @@ Configuration resolves `config/core.yaml` by default; `--config` overrides. Envi
 | 10 | External Device Transport | **IMPLEMENTED** | `TcpTransport` `127.0.0.1` + `0.0.0.0` LAN with firewall (`docs/windows-firewall.md`) |
 | 11 | CLI Lifecycle | **IMPLEMENTED** | `--config`/`--env`, foreground loop, `agents` command, `execute(runtime)` deprecated → removal v0.4.0 |
 | 12 | Integration Spine | **IMPLEMENTED** | `tests/integration/test_core_spine.py:1` + scheduler `agent` flow |
-| 13 | Cleanup / Docs / Release | **IMPLEMENTED** | This README · `pyproject.toml:7` `0.2.1` |
+| 13 | Cleanup / Docs / Release | **IMPLEMENTED** | This README · `pyproject.toml:7` `0.3.0` |
 
-No deferred items for v0.2.1 — all 13 phases are implemented. Future: TLS for external transport, NSSM Windows Service alternative (`docs/windows-autostart.md`), auto-scheduler on device connect.
+All 13 phases are implemented as of v0.3.0 (TLS for external transport, auto-scheduler on device connect, NSSM alternative in `docs/windows-autostart.md`). Legacy `0.2.1` clients remain supported via negotiation.
 
 ## Configuration
 
@@ -120,11 +120,14 @@ No hardcoded credentials. `TokenAuthenticationProvider` checks `identity.metadat
 
 ## External-Device Communication
 
+Current C.O.R.E. version = 0.3.0.
+
 External TCP requires TLS. External devices authenticate before application messages.
 Connections are persistent. Maximum frame size is 10 MB. Maximum active connections is 64.
 Idle connections expire after 300 seconds. TLS handshake timeout is 5 seconds.
 
-* `0.0.0.0` binding fails closed without valid TLS (no plaintext downgrade); `127.0.0.1` keeps legacy plaintext for local operation/tests.
+* `0.0.0.0` binding fails closed without valid TLS (no plaintext downgrade); `127.0.0.1` keeps legacy plaintext for local operation/tests. TLS minimum is 1.2.
+* External authentication cannot use existence-only authentication: `TokenAuthenticationProvider` is required for external-device configuration; missing or existence-only configuration fails closed and the listener does not start. External identities must have a configured token.
 * Handshake: `CORE_HANDSHAKE {identity_id, credential, protocol_version}` → `CORE_HANDSHAKE_RESPONSE {authenticated, identity_id, protocol_version, connection_id}` using existing `Message` format + `core.version` negotiation.
 * Every application message must carry `identity_id == connection.identity_id` and `source == connection.identity_id`; violations close the connection.
 * States: `CONNECTED → TLS_ESTABLISHED → AUTHENTICATING → AUTHENTICATED → CLOSING → CLOSED`.
