@@ -864,6 +864,100 @@ class CoreApplication:
             f"re-provisioned {reprovisioned} identit(ies)."
         )
 
+    def provision_device(
+        self,
+        *,
+        device_id: str,
+        token: str,
+        device_name: str | None = None,
+        device_type: str = "generic",
+        platform: str = "unknown",
+        capabilities: list[str] | None = None,
+        protocol_version: str = "0.3.0",
+        permissions: list[str] | None = None,
+    ) -> dict:
+        """Pre-provision an external-device identity (operator use).
+
+        Writes a sanitized persisted identity (no ``connection_id``, no live
+        status) to the active R.E.S.C.S. adapter and registers the matching
+        in-memory security identity so the device's first ``CORE_HANDSHAKE``
+        can authenticate. Re-provisioning overwrites the stored credential.
+        The token is never logged.
+        """
+        from core.communication.devices import DeviceRecord
+        from core.communication.protocol import validate_registration_payload
+        from core.security.models import Identity, IdentityType, Permission
+
+        if not isinstance(device_id, str) or not device_id.strip():
+            raise ValueError("device_id cannot be empty.")
+        if not isinstance(token, str) or not token:
+            raise ValueError("A non-empty token is required.")
+        device_id = device_id.strip()
+        payload = {
+            "device_id": device_id,
+            "device_name": device_name or device_id,
+            "device_type": device_type,
+            "platform": platform,
+            "capabilities": list(capabilities or []),
+            "protocol_version": protocol_version,
+        }
+        code, message = validate_registration_payload(payload)
+        if code is not None:
+            raise ValueError(message or "Invalid device registration fields.")
+        permission_names = list(permissions) if permissions else ["read"]
+        granted: set[Permission] = set()
+        for name in permission_names:
+            try:
+                granted.add(Permission(str(name).strip().lower()))
+            except Exception as exc:
+                raise ValueError(f"Invalid permission: {name!r}.") from exc
+        if not granted:
+            granted.add(Permission.READ)
+
+        if not self.configuration.is_running:
+            self._load_configuration()
+
+        record = DeviceRecord(
+            device_id=device_id,
+            device_name=payload["device_name"],
+            device_type=device_type,
+            platform=platform,
+            capabilities=list(capabilities or []),
+            status="offline",
+            identity_id=device_id,
+            connection_id=None,
+            protocol_version=protocol_version,
+        )
+        snapshot = record.to_persistent_dict(
+            token=token, permissions=sorted(p.value for p in granted)
+        )
+        try:
+            self.rescs.persist_device(snapshot)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to persist device {device_id!r} via R.E.S.C.S.: {exc}"
+            ) from exc
+        try:
+            try:
+                self.security.unregister_identity(device_id)
+            except Exception:
+                pass
+            self.security.register_identity(
+                Identity(
+                    identity_id=device_id,
+                    name=payload["device_name"],
+                    identity_type=IdentityType.DEVICE,
+                    permissions=frozenset(granted),
+                    metadata={"token": token},
+                )
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to register security identity for {device_id!r}: {exc}"
+            ) from exc
+        self.logger.info(f"Provisioned device identity: {device_id}")
+        return snapshot
+
     def _apply_component_policy(self) -> None:
         """
         Apply the component enable/disable policy to the runtime.

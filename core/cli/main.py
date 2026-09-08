@@ -83,6 +83,26 @@ def create_parser() -> argparse.ArgumentParser:
         help="Show agent assignments (scheduler).",
     )
 
+    provision_parser = subparsers.add_parser(
+        "provision-device",
+        help="Pre-provision an external-device identity + token (first-connect setup).",
+    )
+    provision_parser.add_argument("--device-id", required=True)
+    provision_parser.add_argument("--device-name", default=None)
+    provision_parser.add_argument("--device-type", default="generic")
+    provision_parser.add_argument("--platform", default="unknown")
+    provision_parser.add_argument(
+        "--capabilities", default="", help="Comma-separated list."
+    )
+    provision_parser.add_argument(
+        "--token",
+        default=None,
+        help="Device token (prompted securely when omitted; never logged).",
+    )
+    provision_parser.add_argument(
+        "--permissions", default="read", help="Comma-separated list."
+    )
+
     version_parser = subparsers.add_parser(
         "version",
         help="Show C.O.R.E. version and compatibility.",
@@ -369,6 +389,49 @@ def execute_application(
 
     if args.command == "version":
         _print_version(app, getattr(args, "client", None))
+        return 0
+
+    if args.command == "provision-device":
+        import getpass
+
+        token = getattr(args, "token", None)
+        if not token:
+            try:
+                token = getpass.getpass(
+                    f"Token for {getattr(args, 'device_id', 'device')}: "
+                )
+            except Exception:
+                token = None
+        if not token:
+            print("ERROR: a non-empty token is required.")
+            return 2
+        capabilities = [
+            c.strip()
+            for c in str(getattr(args, "capabilities", "") or "").split(",")
+            if c.strip()
+        ]
+        permissions = [
+            p.strip()
+            for p in str(getattr(args, "permissions", "") or "").split(",")
+            if p.strip()
+        ]
+        try:
+            snapshot = app.provision_device(
+                device_id=args.device_id,
+                token=token,
+                device_name=getattr(args, "device_name", None),
+                device_type=getattr(args, "device_type", "generic"),
+                platform=getattr(args, "platform", "unknown"),
+                capabilities=capabilities,
+                permissions=permissions,
+            )
+        except (ValueError, RuntimeError) as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        finally:
+            token = None
+        print(f"Provisioned device: {snapshot['device_id']}")
+        print("Identity persisted (offline). Token is stored, never displayed.")
         return 0
 
     return 0
