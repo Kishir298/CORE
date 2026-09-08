@@ -385,3 +385,22 @@ def test_ingestor_requires_adapter_and_registry():
     ingestor = ResourceIngestor(InMemoryRescsAdapter())
     with pytest.raises(IngestionError):
         ingestor.ingest_resource("abc123")
+
+
+def test_broken_attach_ingestor_surfaces_instead_of_silently_detaching():
+    class BrokenOrg:
+        def attach_ingestor(self, ingestor):
+            raise RuntimeError("wiring broken")
+
+    with pytest.raises(RuntimeError, match="wiring broken"):
+        ResourceIngestor(InMemoryRescsAdapter(), None, BrokenOrg())
+
+
+def test_organization_without_attach_method_still_constructs():
+    class MinimalOrg:
+        pass
+
+    ingestor = ResourceIngestor(
+        InMemoryRescsAdapter(), None, MinimalOrg()
+    )
+    assert ingestor.adapter is not None
