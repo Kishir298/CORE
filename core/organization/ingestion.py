@@ -157,10 +157,10 @@ class ResourceIngestor:
         if organization is not None:
             attach = getattr(organization, "attach_ingestor", None)
             if callable(attach):
-                try:
-                    attach(self)
-                except Exception:
-                    pass
+                # Deliberately unguarded: a failing attach means the
+                # organization wiring itself is broken and must surface
+                # instead of leaving the engine silently detached.
+                attach(self)
 
     @property
     def adapter(self) -> Any:
