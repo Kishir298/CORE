@@ -104,9 +104,30 @@ into `None`. Organization boundary violations raise
 ## Organization responsibilities
 
 Categorization (`categorize_resource` / `organize_resource`), indexing
-(stable `resource:<id>` entries), discovery (`by_category` / `by_resource`
-/ `resource()`), resource linkage (attached `ResourceRegistry`), and
-authoritative reconciliation (`reconcile()`).
+(stable `resource:<id>` entries), discovery (`discover()` over
+`by_category` / `by_resource` / `resource()`), resource linkage (attached
+`ResourceRegistry`), and authoritative reconciliation (`reconcile()`).
+
+## Dedicated organization API
+
+Higher-level callers use `OrganizationEngine` alone — no direct
+`ResourceRegistry`, adapter, or `ResourceIngestor` handling:
+
+```python
+organization.ingest_resource("r1")   # -> Resource (fetch→validate→upsert→categorize)
+organization.ingest_all()            # -> {ingested, updated, failed, errors}
+organization.reconcile()             # -> {added, updated, removed, unchanged, failed, errors}
+organization.discover(category="sensor")
+organization.discover(resource_id="r1")
+organization.discover(category="sensor", resource_id="r1")
+organization.resource("r1")          # -> underlying Resource
+organization.forget_resource("r1")   # C.O.R.E.-side only, never deletes R.E.S.C.S.
+```
+
+`discover()` is pure (no R.E.S.C.S. I/O, no mutation) and returns a
+snapshot list, so it works even without an attached ingestor. Write paths
+(`ingest_*` / `reconcile` / `forget_resource`) delegate to the attached
+`ResourceIngestor` and raise `OrganizationError` when none is attached.
 
 R.E.S.C.S. is the persistence authority. C.O.R.E. Organization is an
 in-memory organizational/indexing layer. Organization never persists.
