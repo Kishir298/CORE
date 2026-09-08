@@ -182,6 +182,34 @@ class OrganizationEngine:
                 if entry.resource_id == resource_id
             ]
 
+    def discover(
+        self,
+        *,
+        category: str | None = None,
+        resource_id: str | None = None,
+    ) -> list[OrganizationEntry]:
+        """Discover organized entries without touching internals.
+
+        Unified organization-facing discovery over the existing index:
+
+        * neither argument → snapshot of all entries (same as ``list()``)
+        * only ``category`` → entries in that category
+        * only ``resource_id`` → entries linked to that resource
+        * both → intersection of the two filters
+        * unknown category/resource → ``[]`` (no exception)
+
+        Pure discovery: performs no R.E.S.C.S. I/O, mutates nothing, and
+        is idempotent. Returns a snapshot list; mutating it never affects
+        the index. Thread-safe.
+        """
+        with self._lock:
+            entries = list(self._entries.values())
+        if category is not None:
+            entries = [e for e in entries if e.category == category]
+        if resource_id is not None:
+            entries = [e for e in entries if e.resource_id == resource_id]
+        return entries
+
     def categorize_resource(self, resource) -> OrganizationEntry:
         """
         Create or update an organization entry that links a resource.
@@ -234,13 +262,15 @@ class OrganizationEngine:
             ]:
                 del self._entries[entry_id]
 
-    def forget_resource(self, resource_id: str):
+    def forget_resource(self, resource_id: str) -> Any:
         """Forget a resource representation (registry + organization).
 
-        Prefers the attached ingestor when present so registry removal and
-        organization cleanup stay in one path; otherwise unregisters via
-        the attached registry (which cascades) or drops organization
-        entries only.
+        C.O.R.E.-side removal only: drops the registry entry (which
+        cascades to organization entries) and never deletes from R.E.S.C.S.
+        storage. A later ingestion/reconciliation restores it if R.E.S.C.S.
+        still holds it. Idempotent only in the sense that a second call
+        raises the registry's not-found error. Thread-safe (ingestor
+        reference is copied out before delegating).
         """
         with self._lock:
             ingestor = self._ingestor
@@ -252,8 +282,16 @@ class OrganizationEngine:
         self.remove_resource(resource_id)
         return None
 
-    def ingest_resource(self, resource_id: str):
-        """Ingest one R.E.S.C.S. resource through the attached ingestor."""
+    def ingest_resource(self, resource_id: str) -> Any:
+        """Ingest one R.E.S.C.S. resource through the attached ingestor.
+
+        Talks to R.E.S.C.S. (fetch), validates/normalizes, then mutates
+        C.O.R.E. (registry upsert + categorize). Idempotent: repeated calls
+        update the same entry. Raises ``RescsResourceNotFound`` when
+        R.E.S.C.S. explicitly reports absence, ``RescsUnavailable`` on
+        backend failure (mutates nothing), ``InvalidResourceData`` on bad
+        data, ``OrganizationError`` when no ingestor is attached.
+        """
         with self._lock:
             ingestor = self._ingestor
         if ingestor is None or not hasattr(ingestor, "ingest_resource"):
@@ -262,8 +300,15 @@ class OrganizationEngine:
             )
         return ingestor.ingest_resource(resource_id)
 
-    def ingest_all(self):
-        """Ingest all R.E.S.C.S. resources through the attached ingestor."""
+    def ingest_all(self) -> dict[str, Any]:
+        """Ingest all R.E.S.C.S. resources through the attached ingestor.
+
+        Bulk form of :meth:`ingest_resource`: deterministic
+        ``resource_id`` order, ``{ingested, updated, failed, errors}``
+        result, invalid items collected without aborting, backend failure
+        raises ``RescsUnavailable``. Mutates C.O.R.E.; idempotent on
+        unchanged state.
+        """
         with self._lock:
             ingestor = self._ingestor
         if ingestor is None or not hasattr(ingestor, "ingest_all"):
@@ -272,8 +317,16 @@ class OrganizationEngine:
             )
         return ingestor.ingest_all()
 
-    def reconcile(self):
-        """Reconcile against authoritative R.E.S.C.S. state."""
+    def reconcile(self) -> dict[str, Any]:
+        """Reconcile against authoritative R.E.S.C.S. state.
+
+        Delegates to the attached ingestor's authoritative pipeline:
+        adds missing, updates changed, heals unchanged, removes explicitly
+        absent ids (registry + organization), reports invalid items, and
+        raises ``RescsUnavailable`` with zero mutations on backend failure.
+        Returns deterministic ``{added, updated, removed, unchanged,
+        failed, errors}`` with sorted id lists. Idempotent.
+        """
         with self._lock:
             ingestor = self._ingestor
         if ingestor is None or not hasattr(ingestor, "reconcile"):
@@ -282,9 +335,9 @@ class OrganizationEngine:
             )
         return ingestor.reconcile()
 
-    def resource(self, resource_id: str):
+    def resource(self, resource_id: str) -> Any:
         """
-        Return the resource for an id by querying the attached registry.
+        Return the underlying resource for an id (registry read-through).
 
         Resource discovery requires an attached registry and raises via the
         registry when the resource is unknown. The registry call happens
