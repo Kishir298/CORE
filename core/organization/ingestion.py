@@ -154,6 +154,13 @@ class ResourceIngestor:
         self._adapter = adapter
         self._registry = registry
         self._organization = organization
+        if organization is not None:
+            attach = getattr(organization, "attach_ingestor", None)
+            if callable(attach):
+                try:
+                    attach(self)
+                except Exception:
+                    pass
 
     @property
     def adapter(self) -> Any:
@@ -174,6 +181,61 @@ class ResourceIngestor:
             raise RescsUnavailable(
                 f"R.E.S.C.S. unavailable while fetching {resource_id!r}."
             ) from exc
+
+    def _upsert_normalized(self, normalized: Resource) -> tuple[Resource, bool]:
+        """Register or update one normalized resource; return (resource, created).
+
+        A changed ``resource_type`` re-registers so the organization
+        category (derived from type) stays exact under the stable entry id
+        ``resource:<id>``. Otherwise the existing object is updated in
+        place and re-categorized so the organization entry refreshes.
+        """
+        registry = self._require_registry()
+        resource_id = normalized.resource_id
+        try:
+            existing = registry.get(resource_id)
+        except ResourceNotFound:
+            registry.register(normalized)
+            return normalized, True
+        if existing.resource_type != normalized.resource_type:
+            # Category is derived from type: re-register so the
+            # organization index stays exact. Runtime presence fields
+            # live on the old object and are intentionally not carried.
+            registry.unregister(resource_id)
+            registry.register(normalized)
+            return normalized, True
+        registry.update(
+            resource_id,
+            name=normalized.name,
+            owner=normalized.owner,
+            source=normalized.source,
+            capabilities=list(normalized.capabilities),
+            metadata=dict(normalized.metadata),
+        )
+        if self._organization is not None:
+            self._organization.categorize_resource(existing)
+        return existing, False
+
+    @staticmethod
+    def _normalized_equals(first: Resource, second: Resource) -> bool:
+        """Compare the organization-relevant fields of two resources."""
+        return (
+            first.name == second.name
+            and first.resource_type == second.resource_type
+            and first.owner == second.owner
+            and first.source == second.source
+            and list(first.capabilities or []) == list(second.capabilities or [])
+            and dict(first.metadata or {}) == dict(second.metadata or {})
+        )
+
+    def _current_resources(self) -> dict[str, Resource]:
+        """Snapshot the current C.O.R.E.-side resources by id."""
+        registry = self._require_registry()
+        if hasattr(registry, "list_resources"):
+            items = registry.list_resources()
+        else:
+            items = registry.list()
+        return {item.resource_id: item for item in (items or [])}
 
     def ingest_resource(self, resource_id: str) -> Resource:
         """Retrieve one resource and organize it (idempotent).
@@ -198,29 +260,81 @@ class ResourceIngestor:
                 f"R.E.S.C.S. reports no such resource: {resource_id!r}."
             )
         normalized = normalize_resource(stored)
+        resource, _ = self._upsert_normalized(normalized)
+        return resource
+
+    def reconcile(self) -> dict[str, Any]:
+        """Reconcile C.O.R.E. state against authoritative R.E.S.C.S. state.
+
+        R.E.S.C.S. is authoritative: resources present there are added or
+        updated here; resources explicitly absent there are removed here
+        (registry + organization entries). A backend failure raises
+        :class:`RescsUnavailable` and mutates nothing. Invalid items are
+        reported without aborting the run and never cause deletion.
+
+        Returns a deterministic summary with sorted id lists::
+
+            {"added": [...], "updated": [...], "removed": [...],
+             "unchanged": [...], "failed": [...], "errors": {...}}
+        """
+        registry = self._require_registry()
         try:
-            existing = registry.get(resource_id)
-        except ResourceNotFound:
-            registry.register(normalized)
-            return normalized
-        if existing.resource_type != normalized.resource_type:
-            # Category is derived from type: re-register so the
-            # organization index stays exact. Runtime presence fields
-            # live on the old object and are intentionally not carried.
-            registry.unregister(resource_id)
-            registry.register(normalized)
-            return normalized
-        registry.update(
-            resource_id,
-            name=normalized.name,
-            owner=normalized.owner,
-            source=normalized.source,
-            capabilities=normalized.capabilities,
-            metadata=normalized.metadata,
-        )
-        if self._organization is not None:
-            self._organization.categorize_resource(existing)
-        return existing
+            stored_all = self._adapter.list_resources()
+        except Exception as exc:
+            raise RescsUnavailable(
+                "R.E.S.C.S. unavailable while listing resources."
+            ) from exc
+        authoritative: dict[str, Resource] = {}
+        failed: list[str] = []
+        errors: dict[str, str] = {}
+        for item in sorted(stored_all or [], key=lambda i: self._sort_key(i)):
+            try:
+                normalized = normalize_resource(item)
+            except InvalidResourceData as exc:
+                label = self._describe(item)
+                failed.append(label)
+                errors[label] = str(exc)
+                continue
+            authoritative[normalized.resource_id] = normalized
+        current = self._current_resources()
+        added: list[str] = []
+        updated: list[str] = []
+        unchanged: list[str] = []
+        for resource_id in sorted(authoritative):
+            normalized = authoritative[resource_id]
+            existing = current.get(resource_id)
+            if existing is None:
+                resource, _ = self._upsert_normalized(normalized)
+                added.append(resource.resource_id)
+                continue
+            if self._normalized_equals(existing, normalized):
+                # Still re-categorize to heal any drifted organization entry
+                # without counting it as an update.
+                if self._organization is not None:
+                    try:
+                        self._organization.categorize_resource(existing)
+                    except Exception:
+                        pass
+                unchanged.append(resource_id)
+                continue
+            self._upsert_normalized(normalized)
+            updated.append(resource_id)
+        removed: list[str] = []
+        for resource_id in sorted(current):
+            if resource_id not in authoritative:
+                try:
+                    registry.unregister(resource_id)
+                except ResourceNotFound:
+                    pass
+                removed.append(resource_id)
+        return {
+            "added": sorted(added),
+            "updated": sorted(updated),
+            "removed": sorted(removed),
+            "unchanged": sorted(unchanged),
+            "failed": sorted(failed),
+            "errors": dict(sorted(errors.items())),
+        }
 
     def ingest_all(self) -> dict[str, Any]:
         """Retrieve every resource and organize it, deterministically.
