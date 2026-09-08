@@ -19,13 +19,48 @@ WINDOWS (C.O.R.E. host/server)
 MAC (external R.I.S.A.R.M.S. device)
 ```
 
-## Windows host preparation
+## 1. Windows host setup
 
-1. Add the firewall exception (`docs/windows-firewall.md`) for the
-   configured port (example below uses `5000`).
-2. Provide a server TLS certificate (external `0.0.0.0` binding fails
-   closed without valid TLS 1.2+ material — never disable this).
-3. Configure `config/core.yaml` (or `CORE_*` environment overrides):
+Firewall port 5000 is already configured and working. Verify it is still
+in place (see `docs/windows-firewall.md`); no further firewall change is
+needed unless the port number is changed.
+
+## 2. TLS certificate configuration (Windows)
+
+External `0.0.0.0` binding fails closed without valid TLS 1.2+ material —
+never disable it, never fall back to plaintext for the LAN test.
+
+Create a self-signed certificate (PowerShell, paths are examples):
+
+```powershell
+New-SelfSignedCertificate -DnsName "core-windows" -CertStoreLocation "Cert:\LocalMachine\My"
+```
+
+Export the certificate (public) and private key to files, e.g.
+`C:\risarms\tls\core.crt` and `C:\risarms\tls\core.key`, or with
+OpenSSL:
+
+```powershell
+openssl req -x509 -newkey rsa:2048 -nodes `
+  -keyout C:\risarms\tls\core.key `
+  -out C:\risarms\tls\core.crt `
+  -subj "/CN=core-windows" -days 825
+```
+
+Copy the **public** `core.crt` to the Mac (needed for `--ca-file` below).
+The private `core.key` stays on the Windows host. Neither file is ever
+committed to git (see `.gitignore`: `*.crt`, `*.key`, `*.pem`).
+
+## 3. Windows C.O.R.E. configuration
+
+Copy the example (do not edit the committed example with real paths):
+
+```powershell
+copy config\core.lan.example.yaml config\core.lan.yaml
+```
+
+Edit `config\core.lan.yaml` so `communication.tls.certfile/keyfile` point
+at the real files:
 
 ```yaml
 communication:
@@ -35,8 +70,8 @@ communication:
   port: 5000
   tls:
     enabled: true
-    certfile: "C:\\path\\to\\core.crt"
-    keyfile: "C:\\path\\to\\core.key"
+    certfile: "C:\\risarms\\tls\\core.crt"
+    keyfile: "C:\\risarms\\tls\\core.key"
 
 network:
   enabled: true
@@ -49,13 +84,94 @@ rescs:
   path: "var/rescs.json"
 ```
 
-4. Ensure the Mac's identity exists on first connect: either pre-register
-   it (`security` identity with `device` type + token) or let the first
-   authenticated registration persist it automatically (token is captured
-   from the provisioned identity at registration time).
-5. Start C.O.R.E.: `py -m core --config config/core.yaml start`.
+`config\core.lan.yaml` is git-ignored (`config/*.local.*` does not match —
+keep it out of commits manually; it contains machine paths).
 
-## Expected first-registration sequence (Mac)
+## 4. Find the Windows LAN IP
+
+```powershell
+ipconfig
+```
+
+Use the IPv4 address of the Wi-Fi/LAN adapter on the same network as the
+Mac, e.g. `192.168.1.10`. Do not hardcode it anywhere in the repo; it is
+passed to the Mac client at runtime.
+
+## 5. Provision the Mac device identity (Windows, one-time)
+
+The first `CORE_HANDSHAKE` authenticates against a provisioned identity,
+so register the Mac's `device_id` + token **before** the first connect.
+The token is prompted securely and never logged:
+
+```powershell
+py -m core --config config\core.lan.yaml provision-device `
+  --device-id mac-01 --device-name "MacBook" --platform mac `
+  --device-type phone --capabilities chat
+```
+
+Expected output:
+
+```text
+Provisioned device: mac-01
+Identity persisted (offline). Token is stored, never displayed.
+```
+
+Give the same token to the Mac user out-of-band. Re-running the command
+rotates the stored token.
+
+## 6. Start C.O.R.E. (Windows)
+
+```powershell
+py -m core --config config\core.lan.yaml start
+```
+
+Expected: `C.O.R.E. is running.` Leave it running.
+
+## 7. Mac client setup
+
+The client is stdlib-only (no `core` imports, no extra packages):
+
+```bash
+cd /path/to/CORE
+python3 client/core_device_client.py --help
+# or: python3 -m client --help
+```
+
+Save the remembered device (one-time; stores NO secrets):
+
+```bash
+python3 -m client --remember \
+  --device-file ~/.risarms-device.json \
+  --device-id mac-01 \
+  --device-name "MacBook" \
+  --host 192.168.1.10 --port 5000
+```
+
+Expected:
+
+```text
+Remembered device saved to ~/.risarms-device.json (no secrets stored).
+Login is still required on every launch (Option A).
+```
+
+Copy the Windows `core.crt` to the Mac, e.g. `~/core.crt`.
+
+## 8. Logging in (Mac — every launch, Option A)
+
+```bash
+python3 -m client \
+  --device-file ~/.risarms-device.json \
+  --host 192.168.1.10 --port 5000 \
+  --ca-file ~/core.crt
+```
+
+The client prompts `Token for mac-01:` (or pass `--token` for scripting).
+If the certificate is self-signed and verification must be skipped on a
+trusted LAN only, add `--insecure` explicitly.
+
+## 9. Connecting + device registration (Mac)
+
+After login the client automatically performs:
 
 ```text
 TCP connect to <windows-lan-ip>:5000
@@ -66,15 +182,42 @@ DEVICE_REGISTER {device_id, device_name, device_type, platform, capabilities, pr
 DEVICE_REGISTER_RESPONSE {registered: true, device_id, status: "online"}
 ```
 
-On the host, `var/rescs.json` must gain a `devices` entry for the Mac
+Expected client output:
+
+```text
+Authenticated (connection_id=<uuid>).
+Registered: {'registered': True, 'device_id': 'mac-01', 'status': 'online'}. Status: online.
+```
+
+On the host, `var/rescs.json` gains a `devices` entry for the Mac
 (identity fields + token; no `connection_id`, no live status).
 
-## Expected disconnect behavior
+## 10. Disconnect behavior
 
-Mac disconnects (or loses Wi-Fi / shuts down): host marks it `offline`,
+Quit the client (`quit` or Ctrl+C): the host marks the Mac `offline`,
 clears `connection_id`, updates `last_seen`. The `devices` entry remains.
+The client prints:
 
-## Expected restart behavior
+```text
+Disconnected; login session cleared (device remains remembered).
+```
+
+## 11. Reconnect behavior
+
+Launch the client again (login again — Option A), with the same
+`device_id`/`identity_id` + token:
+
+- authentication succeeds against the persisted identity
+- `DEVICE_REGISTER` restores the same logical record, `online`, with a
+  NEW `connection_id`
+- duplicate `DEVICE_REGISTER` while online is rejected with
+  `DEVICE_ALREADY_REGISTERED`; a wrong token is rejected and the device
+  stays `offline`
+
+While the client stays open, typing `reconnect` re-establishes the
+session over a new `connection_id` without re-entering anything.
+
+## 12. C.O.R.E. restart behavior
 
 Shut C.O.R.E. down and start it again **before** the Mac reconnects:
 
@@ -82,17 +225,17 @@ Shut C.O.R.E. down and start it again **before** the Mac reconnects:
 - discovery lists the Mac as `status: offline`
 - `registered_devices` includes it; `online_devices` does not
 
-## Expected reconnect behavior
+## 13. Option A login behavior (remembered device ≠ login session)
 
-Mac reconnects with the same `device_id`/`identity_id` + credential:
+Persistent (`~/.risarms-device.json`): `device_id`, `identity_id`,
+endpoint, non-secret metadata. Ephemeral (memory only): token, socket,
+`connection_id`, auth state.
 
-- authentication succeeds against the re-provisioned identity
-- `DEVICE_REGISTER` restores the same logical record, `online`, with a
-  NEW `connection_id`
-- counts read `registered=1, online=1, offline=0` for a single device
-- duplicate `DEVICE_REGISTER` while online is rejected with
-  `DEVICE_ALREADY_REGISTERED`; a wrong credential is rejected and the
-  device stays `offline`
+- App open → session stays authenticated (reconnect works).
+- Full app shutdown → session destroyed, connection closed cleanly,
+  nothing secret written to disk.
+- Next launch → remembered device loads, login is required again.
+- The device is NOT treated as brand-new: no re-registration from scratch.
 
 ## Validation checklist (fill in during the physical test)
 
@@ -105,9 +248,12 @@ Mac reconnects with the same `device_id`/`identity_id` + credential:
 - [ ] Mac reconnect → `online`, same `device_id`, new `connection_id`
 - [ ] Wrong credential → rejected, stays `offline`
 - [ ] Claiming another `device_id` → rejected
+- [ ] Client restart → login required again, device still remembered
 
 ## Security notes
 
 - Never disable TLS or switch to the existence provider for the LAN test.
 - `var/rescs.json` contains device tokens: it is git-ignored local state;
   never commit it, never copy it off the host insecurely.
+- The Mac remembered-device file contains no secrets; the login token is
+  never written to disk by the client.

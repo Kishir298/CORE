@@ -1,0 +1,64 @@
+# C.O.R.E. LAN example — Windows host ↔ Mac external device.
+#
+# Copy to a local file (never commit the copy with real paths):
+#   copy config\core.lan.example.yaml config\core.lan.yaml
+# Start with:
+#   py -m core --config config\core.lan.yaml start
+#
+# Firewall port 5000 must already allow inbound TCP (see docs/windows-firewall.md).
+# TLS stays ENABLED for any external binding; C.O.R.E. fails closed without it.
+
+core:
+  name: "C.O.R.E."
+  version: "0.3.0"
+
+environment: "production"
+
+logging:
+  level: "INFO"
+
+security:
+  # External devices REQUIRE the token provider. Never use existence here.
+  provider: token
+  enforce_authorization: false
+
+communication:
+  enabled: true
+  transport: tcp
+  host: "0.0.0.0"
+  port: 5000
+  tls:
+    enabled: true
+    certfile: "C:\\path\\to\\core.crt"
+    keyfile: "C:\\path\\to\\core.key"
+
+network:
+  enabled: true
+
+rescs:
+  adapter: file
+  path: "var/rescs.json"
+
+components:
+  configuration:
+    enabled: true
+  logging:
+    enabled: true
+  security:
+    enabled: true
+  resources:
+    enabled: true
+  organization:
+    enabled: true
+  events:
+    enabled: true
+  communication:
+    enabled: true
+  routing:
+    enabled: true
+  health:
+    enabled: true
+  dependencies:
+    enabled: true
+  services:
+    enabled: true

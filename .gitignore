@@ -57,6 +57,19 @@ Desktop.ini
 var/
 *.tmp
 
+# TLS material (never commit certificates / private keys)
+*.crt
+*.cer
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Remembered external-device files may live in-repo during tests only;
+# real device files belong in the home directory, never in git.
+.risarms-device.json
+*-device.json
+
 # Tool backups
 opencode.json.backup
 .aider*

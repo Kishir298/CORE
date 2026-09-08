@@ -873,6 +873,8 @@ py -m core --help
 
 py -m core --config config/core.yaml --env development start
 
+py -m core --config config/core.lan.yaml provision-device --device-id mac-01 --platform mac
+
 py -m core --config config/core.yaml status
 
 py -m core --config config/core.yaml health
@@ -1098,8 +1100,12 @@ CORE/
 │   └── cli/
 │       └── CLI / foreground runtime
 │
+├── client/
+│   └── external-device client (stdlib only, Option A login)
+│
 ├── config/
-│   └── core.yaml
+│   ├── core.yaml
+│   └── core.lan.example.yaml
 │
 ├── docs/
 │   ├── data-distribution.md
