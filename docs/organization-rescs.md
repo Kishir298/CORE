@@ -98,7 +98,66 @@ currently active adapter:
 `IngestionError` (base) → `InvalidResourceData`, `RescsUnavailable`,
 `RescsResourceNotFound`, all under the existing `OrganizationError`.
 Backend exceptions are translated, never leaked; nothing is swallowed
-into `None`.
+into `None`. Organization boundary violations raise
+`OrganizationValidationError` (also under `OrganizationError`).
+
+## Organization responsibilities
+
+Categorization (`categorize_resource` / `organize_resource`), indexing
+(stable `resource:<id>` entries), discovery (`by_category` / `by_resource`
+/ `resource()`), resource linkage (attached `ResourceRegistry`), and
+authoritative reconciliation (`reconcile()`).
+
+R.E.S.C.S. is the persistence authority. C.O.R.E. Organization is an
+in-memory organizational/indexing layer. Organization never persists.
+
+## Organization metadata contract
+
+`categorize_resource()` preserves exactly:
+
+```text
+resource_type, owner, source, status,
+capabilities (copied list),
+metadata (deep-copied dict),
+connection_info (deep-copied dict)
+```
+
+Top-level `category` (= `resource_type`), `name`, and `resource_id` mirror
+the resource. `last_seen` / `registered_at` are intentionally excluded:
+they are C.O.R.E.-side lifecycle fields, not organizational identity.
+Mutable values are defensively copied in both directions, so mutating a
+`Resource` after categorization never changes the stored entry without an
+explicit re-categorization, and mutating an entry never changes the
+`Resource`. Re-categorization replaces metadata wholesale; a
+`resource_type` change updates the category in place without duplicating
+the stable entry.
+
+## Reconciliation
+
+`ResourceIngestor.reconcile()` (also reachable as
+`OrganizationEngine.reconcile()` when an ingestor is attached):
+
+1. `list_resources()` from R.E.S.C.S. (failure → `RescsUnavailable`, zero
+   mutations).
+2. Validate + normalize each item (invalid → `failed`/`errors`, valid items
+   still processed, invalid items never cause deletion).
+3. Add missing, update changed (type change re-registers, same stable id),
+   heal unchanged entries, remove explicitly absent ids from the registry
+   (which cascades to organization entries).
+4. Return deterministic `{added, updated, removed, unchanged, failed,
+   errors}` with sorted id lists.
+
+Successful authoritative absence → removal. Backend failure → preservation.
+Empty successful list → reconcile to zero (distinct from failure).
+Repeated runs without changes are idempotent.
+
+## Thread safety
+
+`OrganizationEngine` holds one `threading.RLock` (same convention as the
+R.E.S.C.S. adapters). All `_entries` access is guarded; `list`,
+`by_category`, `by_resource`, and `__iter__` return snapshots. `resource()`
+copies the registry reference under lock and calls out without holding it,
+so no lock-ordering deadlock with `ResourceRegistry` / R.E.S.C.S.
 
 ## Validation status
 
