@@ -256,6 +256,9 @@ def test_ollama_chat_with_tools_sends_definitions(monkeypatch):
     seen: dict = {}
 
     class _FakeResponse:
+        def close(self):
+            pass
+
         def raise_for_status(self):
             pass
 

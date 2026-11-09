@@ -31,7 +31,10 @@ independently and connected through a stable contract (see
 
 ## Status
 
-v0.3.0 — v0.2 foundation plus production evolution: soft delete & recovery,
+v0.4.0 — v0.3.0 storage features plus the Raspberry Pi deployment
+foundation: signed CORE owner scope (`X-RESCS-Signature`), required
+`/srv/core` mount guard, systemd unit/installer and real CORE loopback
+validation (`docs/RESCS-Pi-Handoff.md`). This includes soft delete & recovery,
 TTL/`ttl_seconds` expiration + admin cleanup (records/files/uploads), tags
 (50/resource), advanced search, bulk (owner-isolated, partial-success),
 race-safe quotas, audit trail, streaming uploads/downloads
@@ -39,8 +42,8 @@ race-safe quotas, audit trail, streaming uploads/downloads
 S3-compatible backend abstraction (+ fake), backup tooling
 (`scripts/rescs_backup.py`), delegated encryption model, in-memory rate
 limiting, and deployment docs. Live PostgreSQL/Supabase, real S3,
-deployed CORE ↔ RESCS interop and 24/7 endurance remain Ready for External
-Validation. See `docs/architecture.md` and `CHANGELOG.md`.
+deployed CORE ↔ RESCS interop, real Pi/ARM64 and 24/7 endurance remain Ready
+for External Validation. See `docs/architecture.md` and `CHANGELOG.md`.
 
 ## Stack
 

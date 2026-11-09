@@ -1,5 +1,10 @@
 # A.S.I.S. — A Smart Intelligence System
 
+## November 2026 Pi update
+
+The opt-in Pi profile adds a shared local inference queue, pinned model approval and resource gates. See [the integration handoff](docs/ASIS-CORE-Integration-Handoff.md) for installation, offline preparation and the separate CORE-HOST patch. Pi hardware performance remains unverified.
+
+
 Intelligence/assistant layer of the R.I.S.A.R.M.S. ecosystem. Runs
 independently — no C.O.R.E. or R.E.S.C.S. required (C.O.R.E. is a real
 but optional uplink; R.E.S.C.S. remains a future boundary; see

@@ -73,22 +73,20 @@ class Pyttsx3Engine(TextToSpeechProvider):
     def synthesize(self, text: str) -> AudioData:
         if not isinstance(text, str) or not text.strip():
             raise TTSError("text must be a non-empty str.")
-        tmp = Path(tempfile.mkdtemp(prefix="asis-tts-")) / "out.wav"
-        try:
-            self._engine.save_to_file(text.strip(), str(tmp))
-            self._engine.runAndWait()
-        except Exception as exc:
-            raise TTSError(f"TTS synthesis failed: {exc}") from exc
-        try:
-            samples, sample_rate, channels = _read_wav_mono(tmp)
-        except Exception as exc:
-            raise TTSError(f"could not read synthesized audio: {exc}") from exc
-        finally:
+        from asis.configuration import settings
+
+        settings.paths.runtime.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="asis-tts-", dir=settings.paths.runtime) as directory:
+            tmp = Path(directory) / "out.wav"
             try:
-                tmp.unlink(missing_ok=True)
-                tmp.parent.rmdir()
-            except OSError:
-                pass
+                self._engine.save_to_file(text.strip(), str(tmp))
+                self._engine.runAndWait()
+            except Exception as exc:
+                raise TTSError(f"TTS synthesis failed: {exc}") from exc
+            try:
+                samples, sample_rate, channels = _read_wav_mono(tmp)
+            except Exception as exc:
+                raise TTSError(f"could not read synthesized audio: {exc}") from exc
         return AudioData(
             samples=samples,
             sample_rate=sample_rate or self._sample_rate,

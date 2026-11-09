@@ -364,15 +364,22 @@ def run_interactive(
         return "qwen3:14b"
 
     def _voice_state() -> str:
-        return "READY" if pipeline is not None else "OFF"
+        if pipeline is None:
+            return "OFF"
+        components = ("audio_input", "audio_output", "speech_recognizer", "tts", "speaker_identifier", "vad")
+        if any(type(getattr(pipeline, name, None)).__name__.startswith("Mock") for name in components):
+            return "MOCK"
+        return "READY"
+
+    is_ollama = getattr(getattr(getattr(app, "ai", None), "provider", None), "name", "") == "ollama"
 
     try:
         with contextlib.suppress(Exception):
-            out.write(_term_layout.header(online=True) + "\n")
+            out.write(_term_layout.header(online=is_ollama) + "\n")
             out.write(
                 _term_layout.status_panel(
                     model=_model_name(),
-                    online=True,
+                    online=is_ollama,
                     memory=True,
                     tools=True,
                     voice=_voice_state(),

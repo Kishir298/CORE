@@ -348,6 +348,11 @@ def test_offline_no_hidden_network_dependencies():
             "api.anthropic",
             "generativelanguage",
         ):
+            # Pi telemetry means local /proc, cgroup and thermal readings,
+            # not network reporting. Keep the exception scoped to that module.
+            if token == "telemetry" and rel == "pi/policy.py":
+                assert "urllib" not in text and "requests" not in text and "socket" not in text
+                continue
             if token in text.lower():
                 banned.append(f"{rel}: {token}")
     assert request_users == {

@@ -25,6 +25,9 @@ def parse_mode(value: str) -> AssistantMode:
     if not isinstance(value, str):
         raise ValueError(f"Invalid assistant mode: {value!r}.")
     normalized = value.strip().lower()
+    from asis.pi.policy import enabled, PolicyError
+    if enabled() and normalized == "coding":
+        raise PolicyError("Pi coding execution is disabled until an enforceable sandbox is validated. Use asis pi-chat --kind code for text-only code generation.")
     for mode in AssistantMode:
         if normalized == mode.value:
             return mode

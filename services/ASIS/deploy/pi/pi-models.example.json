@@ -1,0 +1,10 @@
+{
+  "REPLACE-WITH-EXACT-INSTRUCT-TAG:REPLACE-WITH-QUANTIZED-TAG": {
+    "digest": "REPLACE-WITH-64-HEX-DIGEST-FROM-LOCAL-API",
+    "tier": "small",
+    "peak_gib": 1.5,
+    "context": 2048,
+    "tools_verified": false,
+    "benchmark_verified": false
+  }
+}

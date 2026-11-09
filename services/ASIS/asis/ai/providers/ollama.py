@@ -12,6 +12,8 @@ from asis.configuration.defaults import AI_MODEL as DEFAULT_OLLAMA_MODEL
 from asis.errors import InferenceError
 
 from ..models import AIMessage, AIResponse, NativeToolCall
+from asis.pi.runtime import guarded
+from asis.pi.policy import enabled, approval
 from .base import AIProvider
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
@@ -33,6 +35,30 @@ def _requests():
             "(pip install requests)."
         ) from exc
     return requests
+
+def _post(requests, *args, **kwargs):
+    if not enabled():
+        return requests.post(*args, **kwargs)
+    # Pi inference never consults proxy environment variables or follows redirects.
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        response = session.post(*args, **kwargs, allow_redirects=False)
+        if not 200 <= response.status_code < 300:
+            response.close()
+            raise InferenceError("Pi Ollama returned a non-success HTTP status")
+    except BaseException:
+        session.close()
+        raise
+    close = response.close
+    def finish():
+        try:
+            close()
+        finally:
+            session.close()
+    response.close = finish
+    return response
+
 
 # Upper bound for the implicit availability probe so a down/unreachable
 # server is reported fast. Inference timeouts are unaffected; callers may
@@ -205,6 +231,13 @@ class OllamaProvider(AIProvider):
         seconds so offline/down servers report fast instead of blocking
         on the (long) inference timeout.
         """
+        if enabled():
+            from asis.pi.runtime import request
+            try:
+                request(self.host, "/api/tags")
+                return True
+            except Exception:
+                return False
         if timeout is None:
             probe = min(float(self.timeout), AVAILABILITY_PROBE_TIMEOUT)
         else:
@@ -242,7 +275,7 @@ class OllamaProvider(AIProvider):
             "stream": stream,
         }
         if self.temperature is not None:
-            payload["options"] = {"temperature": self.temperature}
+            payload.setdefault("options", {})["temperature"] = self.temperature
         if self.num_predict:
             payload.setdefault("options", {})["num_predict"] = self.num_predict
         if self.think is not None:
@@ -252,11 +285,16 @@ class OllamaProvider(AIProvider):
             payload["keep_alive"] = self.keep_alive
         if tools:
             payload["tools"] = list(tools)
+        if enabled():
+            payload.setdefault("options", {}).update(getattr(self, "_pi_options", None) or {"num_ctx": 2048, "num_thread": 2})
+            payload["options"]["num_predict"] = max(1, min(self.num_predict or 256, 256))
+            payload["keep_alive"] = 0
         return payload
 
     def _communication_error(self, exc: Exception) -> InferenceError:
         return InferenceError(f"Could not communicate with Ollama: {exc}")
 
+    @guarded
     def chat(
         self,
         messages: Sequence[AIMessage],
@@ -266,7 +304,7 @@ class OllamaProvider(AIProvider):
         attempts = 1 + self.retries
         for attempt in range(attempts):
             try:
-                response = requests.post(
+                response = _post(requests,
                     f"{self.host}/api/chat",
                     json=self._payload(messages, stream=False),
                     timeout=self.timeout,
@@ -277,7 +315,12 @@ class OllamaProvider(AIProvider):
                 if attempt + 1 >= attempts:
                     raise self._communication_error(exc) from exc
 
-        data = response.json()
+        try:
+            data = response.json()
+        finally:
+            response.close()
+        if enabled() and (data.get("error") or data.get("done") is not True):
+            raise InferenceError("Ollama did not confirm a completed generation")
         message = data.get("message") or {}
         content = message.get("content")
         thinking_field = message.get("thinking") or message.get("reasoning") or ""
@@ -308,6 +351,11 @@ class OllamaProvider(AIProvider):
     @property
     def supports_native_tools(self) -> bool:
         """Ollama's /api/chat accepts a tools array (model-dependent)."""
+        if enabled():
+            try:
+                return approval(self.model)[0].get("tools_verified") is True
+            except Exception:
+                return False
         return True
 
     @staticmethod
@@ -339,6 +387,7 @@ class OllamaProvider(AIProvider):
                 continue
         return tuple(parsed)
 
+    @guarded
     def chat_with_tools(
         self,
         messages: Sequence[AIMessage],
@@ -352,7 +401,7 @@ class OllamaProvider(AIProvider):
         attempts = 1 + self.retries
         for attempt in range(attempts):
             try:
-                response = requests.post(
+                response = _post(requests,
                     f"{self.host}/api/chat",
                     json=self._payload(messages, stream=False, tools=wire),
                     timeout=self.timeout,
@@ -363,7 +412,12 @@ class OllamaProvider(AIProvider):
                 if attempt + 1 >= attempts:
                     raise self._communication_error(exc) from exc
 
-        data = response.json()
+        try:
+            data = response.json()
+        finally:
+            response.close()
+        if enabled() and (data.get("error") or data.get("done") is not True):
+            raise InferenceError("Ollama did not confirm a completed generation")
         message = data.get("message") or {}
         content = message.get("content")
         thinking_field = message.get("thinking") or message.get("reasoning") or ""
@@ -394,6 +448,7 @@ class OllamaProvider(AIProvider):
             tool_calls=self.parse_tool_calls(message),
         )
 
+    @guarded
     def stream_chat(
         self,
         messages: Sequence[AIMessage],
@@ -408,9 +463,10 @@ class OllamaProvider(AIProvider):
         """
         requests = _requests()
         response: requests.Response | None = None
+        completed = False
 
         try:
-            response = requests.post(
+            response = _post(requests,
                 f"{self.host}/api/chat",
                 json=self._payload(messages, stream=True),
                 stream=True,
@@ -433,6 +489,8 @@ class OllamaProvider(AIProvider):
                         "Ollama returned invalid streaming data."
                     ) from exc
 
+                if data.get("error"):
+                    raise InferenceError("Ollama reported a failed generation")
                 message = data.get("message") or {}
                 content = message.get("content", "")
 
@@ -442,12 +500,15 @@ class OllamaProvider(AIProvider):
                         yield visible
 
                 if data.get("done"):
+                    completed = True
                     # Flush any buffered visible tail (never thinking).
                     tail = thinking_filter.feed("")
                     if tail:
                         yield tail
                     break
 
+            if enabled() and not completed:
+                raise InferenceError("Ollama stream ended without completion; task not persisted or replayed")
         except requests.RequestException as exc:
             raise self._communication_error(exc) from exc
 

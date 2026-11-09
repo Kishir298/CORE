@@ -54,6 +54,9 @@ def build_memory(db_path: str | Path | None = None) -> MemoryManager:
 def _provider(provider_name: str, model: str):
     """Construct the requested provider, honouring the model override."""
     if provider_name == "mock":
+        from asis.pi.policy import enabled, PolicyError
+        if enabled():
+            raise PolicyError("Pi deployment requires a verified real local model; mock inference is disabled.")
         return MockAIProvider(model=model)
     if provider_name == "ollama":
         from asis.ai.providers import OllamaProvider, resolve_think
@@ -140,7 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="asis",
         description="A.S.I.S. - A Smart Intelligence System. "
-        "Speak to an always-on personal assistant that remembers you.",
+        "Speak to an always-on personal assistant that remembers you. "
+        "Use asis setup or asis doctor for local installation checks. Pi deployments also provide asis pi-status and asis pi-chat (each supports --help).",
     )
     parser.add_argument(
         "--version", action="store_true", help="print the version and exit"
@@ -455,49 +459,32 @@ def apply_cli_log_level(args) -> None:
 
 
 def _build_interactive_pipeline():
-    """Build the shared voice pipeline for the interactive session.
+    """Build exactly the configured voice pipeline, or report its failure."""
+    from asis.voice import factory as vf
+    from asis.voice.pipeline import VoicePipeline
 
-    Reuses the existing voice factory; falls back to scriptable mocks so
-    the terminal works with zero audio hardware or heavy dependencies.
-    Never raises: worst case returns a fully-mocked pipeline.
-    """
+    engines = (settings.voice.input_engine, settings.voice.output_engine,
+               settings.voice.stt.engine, settings.voice.tts.engine,
+               settings.voice.speaker.engine, settings.voice.vad.engine)
+    if "mock" in engines:
+        print("Voice: MOCK components configured; not a real audio readiness result.",
+              file=sys.stderr, flush=True)
     try:
-        from asis.voice import factory as vf
-        from asis.voice.pipeline import VoicePipeline
-
-        def _try(make, fallback):
-            try:
-                return make()
-            except Exception:
-                return fallback()
-
-        from asis.voice.engines.mock import (
-            MockAudioInput,
-            MockAudioOutput,
-            MockSpeakerIdentifier,
-            MockSpeechRecognizer,
-            MockTextToSpeech,
-            MockVadDetector,
-        )
-
         pipeline = VoicePipeline(
-            audio_input=_try(vf.create_audio_input, lambda: MockAudioInput([])),
-            speech_recognizer=_try(vf.create_speech_recognizer, MockSpeechRecognizer),
-            speaker_identifier=_try(
-                vf.create_speaker_identifier, MockSpeakerIdentifier
-            ),
-            tts=_try(vf.create_tts, MockTextToSpeech),
-            audio_output=_try(vf.create_audio_output, MockAudioOutput),
-            vad=_try(vf.create_vad, MockVadDetector),
+            audio_input=vf.create_audio_input(),
+            speech_recognizer=vf.create_speech_recognizer(),
+            speaker_identifier=vf.create_speaker_identifier(),
+            tts=vf.create_tts(), audio_output=vf.create_audio_output(),
+            vad=vf.create_vad(),
         )
-        with contextlib.suppress(Exception):
-            pipeline.audio_input.start()
+        pipeline.audio_input.start()
         return pipeline
-    except Exception:
+    except Exception as exc:
+        print(f"Voice unavailable: {exc}", file=sys.stderr, flush=True)
         return None
 
 
-def entry(argv: Sequence[str] | None = None) -> int:
+def _entry(argv: Sequence[str] | None = None) -> int:
     """Console entry point for A.S.I.S."""
     raw = _normalize_argv(argv)
     if raw and raw[0] == "voice":
@@ -515,6 +502,16 @@ def entry(argv: Sequence[str] | None = None) -> int:
     if raw and raw[0] == "tui":
         from asis.tui.__main__ import entry as tui_entry
         return tui_entry(raw[1:])
+
+    if raw and raw[0] == "pi-chat":
+        from asis.pi.worker import main
+        return main(raw[1:])
+    if raw and raw[0] == "pi-status":
+        from asis.pi.cli import status
+        return status(raw[1:])
+    if raw and raw[0] in ("setup", "doctor"):
+        from asis.cli.maintenance import run_maintenance
+        return run_maintenance(raw)
 
     args = build_parser().parse_args(raw)
     apply_cli_log_level(args)
@@ -575,6 +572,9 @@ def entry(argv: Sequence[str] | None = None) -> int:
         print(_term_layout.footer(w))
         return 0
 
+    if args.provider == "mock":
+        print("AI provider: MOCK (explicit simulation; no real inference).",
+              file=sys.stderr, flush=True)
     identity = build_identity()
     provider = _provider(args.provider, args.model)
     event_bus = EventBus()
@@ -666,10 +666,22 @@ def entry(argv: Sequence[str] | None = None) -> int:
 
         if args.message is not None:
             try:
-                print(handle_message(identity, ai, memory, args.message, assistant=app))
+                print("Persistence: local SQLite; remote agent-state sync is not configured.",
+                      file=sys.stderr, flush=True)
+                emitted = False
+
+                def emit(chunk):
+                    nonlocal emitted
+                    emitted = True
+                    print(chunk, end="", flush=True)
+
+                answer = app.chat_streamed(args.message, on_chunk=emit)
+                if not emitted:
+                    print(answer, end="", flush=True)
+                print(flush=True)
             except KeyboardInterrupt:
                 return 130
-            return 0
+            return 1 if app.last_turn_failed else 0
 
         # Persistent interactive terminal (TEXT/VOICE, docs, typing effect).
         from asis.cli.interactive import run_interactive
@@ -694,6 +706,9 @@ def entry(argv: Sequence[str] | None = None) -> int:
             pass
     except KeyboardInterrupt:
         return 130
+    except Exception as exc:
+        print(f"[FAIL] Task failed: {exc}", file=sys.stderr, flush=True)
+        return 1
     finally:
         # Centralized shutdown (every exit path): pipeline, CORE, then
         # ONLY an A.S.I.S.-owned Ollama process (external servers untouched).
@@ -703,6 +718,33 @@ def entry(argv: Sequence[str] | None = None) -> int:
         _shutdown_core()
         _shutdown_owned_ollama()
     return 0
+
+
+def entry(argv: Sequence[str] | None = None) -> int:
+    """Install temporary termination handlers so owned resources are cleaned up."""
+    import signal
+    import threading
+
+    previous = {}
+
+    def cancel(signum, frame):
+        raise KeyboardInterrupt
+
+    if threading.current_thread() is threading.main_thread():
+        for name in ("SIGTERM", "SIGBREAK"):
+            sig = getattr(signal, name, None)
+            if sig is not None:
+                previous[sig] = signal.signal(sig, cancel)
+    try:
+        return _entry(argv)
+    except KeyboardInterrupt:
+        return 130
+    except Exception as exc:
+        print(f"[FAIL] ASIS failed: {exc}", file=sys.stderr, flush=True)
+        return 1
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":

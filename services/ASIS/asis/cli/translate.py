@@ -84,8 +84,8 @@ def run_translate(argv: Sequence[str] | None = None) -> int:
         return 2
 
     if args.message is not None:
-        print(app.chat(args.message))
-        return 0
+        print(app.chat(args.message), flush=True)
+        return 1 if app.last_turn_failed else 0
 
     print(identity.greeting)
     print(

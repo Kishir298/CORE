@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import patch
 
 from asis.tui.app import ASISTUI
 from asis.tui.boot_orchestrator import BootOrchestrator
@@ -113,7 +112,6 @@ def test_non_mock_mode_requires_ollama():
             return False
     
     # Replace the provider creation
-    original_boot_ai = orchestrator._boot_ai_provider
     
     async def mock_boot_ai():
         provider = UnavailableProvider(model="test")
@@ -175,7 +173,6 @@ def test_mock_mode_vs_real_mode_difference():
             return False
     
     # Replace the provider creation for real mode
-    original_boot_ai = orchestrator_real._boot_ai_provider
     
     async def mock_boot_ai():
         provider = UnavailableProvider(model="test")

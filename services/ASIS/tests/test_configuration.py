@@ -25,10 +25,11 @@ def _clean(*names):
 def _isolated_env():
     # NOTE: must NOT request `monkeypatch` here, or this teardown would run
     # before monkeypatch.undo() and falsely report leaks.
+    baseline = {k: v for k, v in os.environ.items() if k.startswith("ASIS_")}
     yield
-    # Guard: no test may leak ASIS_* variables.
-    leaked = [k for k in os.environ if k.startswith("ASIS_")]
-    assert leaked == [], f"leaked environment variables: {leaked}"
+    # Preserve caller-supplied profile configuration; reject test leaks.
+    current = {k: v for k, v in os.environ.items() if k.startswith("ASIS_")}
+    assert current == baseline, "test leaked ASIS environment changes"
 
 
 # ---- defaults ----
@@ -400,6 +401,8 @@ def test_path_override_tilde_expands(monkeypatch):
 
 
 def test_platformdirs_used_not_repo(monkeypatch):
+    for part in ("DATA", "CONFIG", "CACHE", "LOG", "MEMORY", "RUNTIME"):
+        monkeypatch.delenv(f"ASIS_{part}_DIRECTORY", raising=False)
     calls = []
 
     def fake_user_data_dir(appname):

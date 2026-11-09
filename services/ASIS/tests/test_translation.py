@@ -481,7 +481,7 @@ def test_translation_mode_direct_turn(memory_manager):
         memory_manager, MockAIProvider(responses=("unused",)), mode="translation"
     )
     app.set_translation_languages(source="en", target="fr")
-    assert app.chat("Hello") == "Bonjour"
+    assert app.chat("Hello") == "[MOCK translation] Bonjour"
     assert app.translation_target == "fr"
     assert app.translation_source == "en"
 
@@ -493,7 +493,7 @@ def test_translation_mode_auto_detect_turn(memory_manager):
     app.set_translation_languages(target="en")
     assert app.translation_source == "auto"
     reply = app.chat("Où est l'aéroport le plus proche ?")
-    assert reply == "[fr] Where is the nearest airport?"
+    assert reply == "[fr] [MOCK translation] Where is the nearest airport?"
 
 
 def test_translation_mode_uncertain_source_reports_error(memory_manager):

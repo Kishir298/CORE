@@ -64,3 +64,9 @@ tls/
 *.pem
 *.key
 *.crt
+
+# Pi release artifacts
+wheel/
+wheels/
+wheelhouse*/
+*.whl

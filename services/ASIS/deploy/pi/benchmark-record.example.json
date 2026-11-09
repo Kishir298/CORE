@@ -1,0 +1,21 @@
+{
+  "status": "UNEXECUTED_TEMPLATE",
+  "hardware": "Pi 5 / 8GB / active cooling / SSD / Raspberry Pi OS Lite 64-bit",
+  "os_release": "RECORD",
+  "ollama_version": "RECORD",
+  "exact_model_tag": "RECORD",
+  "digest": "RECORD",
+  "parameter_size": "RECORD",
+  "quantization_level": "RECORD",
+  "threads": 2,
+  "context": 2048,
+  "observed_peak_gib": null,
+  "peak_temperature_c": null,
+  "prompt_eval_tokens_per_second": null,
+  "generation_tokens_per_second": null,
+  "concurrent_website_latency_ms": null,
+  "member_toolfree_verified": false,
+  "owner_tool_protocol_verified": false,
+  "cancel_and_disconnect_verified": false,
+  "owner_approval": "RECORD AFTER BENCHMARK"
+}

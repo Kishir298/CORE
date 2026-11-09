@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sys
-from unittest.mock import patch
 
 import pytest
 
@@ -53,7 +52,6 @@ def test_create_provider_uses_settings():
     }
     
     reset_settings(env=test_env)
-    from asis.configuration.settings import settings
     provider = create_provider()
     
     assert isinstance(provider, OllamaProvider)

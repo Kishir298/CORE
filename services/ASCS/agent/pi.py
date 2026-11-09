@@ -159,16 +159,20 @@ class LocalOllama:
         return json.loads(raw)
 
 
+def deployment_supported():
+    return sys.platform == "linux"
+
+
 def enabled():
-    return os.environ.get("ASCS_PI_MODE") == "1" or (sys.platform == "linux" and platform.machine().lower() in ("aarch64", "arm64"))
+    return os.environ.get("ASCS_PI_MODE") == "1" or (deployment_supported() and platform.machine().lower() in ("aarch64", "arm64"))
 
 
 def run(args):
     """Owner-only orchestration is CORE's responsibility; this endpoint has no tools."""
     try:
-        if sys.platform != "linux":
+        if not deployment_supported():
             raise Blocked("Pi deployment requires Linux with cgroup v2")
-        if os.geteuid() == 0:
+        if getattr(os, "geteuid", lambda: 1)() == 0:
             raise Blocked("Pi inference must run as a dedicated unprivileged account")
         if args.task and len(args.task) > 32000:
             raise Blocked("Task exceeds 32000-character bound")

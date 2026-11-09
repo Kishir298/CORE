@@ -35,14 +35,14 @@ _EXPLICIT: dict[str, str] = {}
 
 def _load_env_files() -> None:
     """Load .env files (project root and user config directory)."""
-    candidates: list[Path] = [_PROJECT_ROOT_ENV_FILE]
+    # Explicit profile paths are a trust boundary: never import repository
+    # or default-user credentials/settings into a portal profile.
+    scoped = any(os.getenv(f"ASIS_{part}_DIRECTORY", "").strip()
+                 for part in ("DATA", "CONFIG", "CACHE", "LOG", "MEMORY", "RUNTIME"))
+    from .paths import get_config_directory
 
-    try:
-        from .paths import get_config_directory
-
-        candidates.append(get_config_directory() / ".env")
-    except Exception:  # pragma: no cover - defensive during bootstrap
-        pass
+    candidates = [] if scoped else [_PROJECT_ROOT_ENV_FILE]
+    candidates.append(get_config_directory() / ".env")
 
     for candidate in candidates:
         if candidate.exists():

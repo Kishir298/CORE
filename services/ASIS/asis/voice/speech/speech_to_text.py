@@ -58,6 +58,7 @@ class SpeechTranscriber:
                 model_size,
                 device=device,
                 compute_type=compute_type,
+                local_files_only=True,
             )
         except Exception as exc:
             from asis.errors import SpeechRecognitionError

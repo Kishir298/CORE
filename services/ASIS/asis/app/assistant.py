@@ -93,6 +93,7 @@ class AssistantApp:
         self._pending_memory_query = ""
         self._max_memory_items = max(1, max_memory_items)
         self._last_plan = None
+        self.last_turn_failed = False
         self._mode = self._coerce_mode(mode)
         self._workspace = workspace
         self._coding_resolver = None
@@ -147,7 +148,7 @@ class AssistantApp:
         if mode is None:
             return parse_mode(settings.coding.default_mode)
         if isinstance(mode, AssistantMode):
-            return mode
+            return parse_mode(mode.value)
         return parse_mode(mode)
 
     @property
@@ -264,24 +265,19 @@ class AssistantApp:
 
     def _execute_tool(self, request: ToolRequest) -> ToolResult:
         try:
-            return self.tools_router.execute(request.tool_name, **request.arguments)
+            result = self.tools_router.execute(request.tool_name, **request.arguments)
+            self.last_turn_failed = self.last_turn_failed or not result.success
+            return result
         except Exception as exc:
             self.logger.exception("Tool dispatch failed: %s", request.tool_name)
+            self.last_turn_failed = True
             return ToolResult.failure(error=str(exc), tool_name=request.tool_name)
 
     def _generate_text(self, messages, on_chunk=None) -> str:
         """Generate user-visible text, streamed when a callback is given."""
         if on_chunk is None:
             return self.engine.generate(messages).content
-        try:
-            return self.engine.generate_streamed(messages, on_chunk=on_chunk)
-        except Exception as exc:
-            from asis.errors import CancellationError
-
-            if isinstance(exc, CancellationError):
-                raise
-            self.logger.warning("Streamed generation failed; using fallback.")
-            return self.engine.generate(messages).content
+        return self.engine.generate_streamed(messages, on_chunk=on_chunk)
 
     def _finalize_with_text(self, text: str) -> str:
         self.session.add_assistant(text)
@@ -439,10 +435,13 @@ class AssistantApp:
         if result.success:
             data = result.data or {}
             reply = str(data.get("translated_text", ""))
+            if data.get("provider") == "mock":
+                reply = "[MOCK translation] " + reply
             if data.get("detected_source"):
                 reply = f"[{data.get('source_language')}] {reply}"
             self.session.add_assistant(reply)
             return reply
+        self.last_turn_failed = True
         note = str(result.error or "translation failed.")
         self.session.add_assistant(f"[translation error] {note}")
         return note
@@ -515,6 +514,7 @@ class AssistantApp:
         before inference. Tool/permission flow is unchanged; only the
         final user-visible generation streams when a callback is given.
         """
+        self.last_turn_failed = False
         text = (message or "").strip()
         if not text:
             return ""
@@ -556,12 +556,14 @@ class AssistantApp:
         if intent is None:
             return None
         if not self.core_available:
+            self.last_turn_failed = True
             note = "CORE_UNAVAILABLE: C.O.R.E. is not connected."
             self.session.add_assistant(note)
             return note
         try:
             result = self.tools_router.execute(intent.tool_name, **intent.kwargs)
         except Exception as exc:
+            self.last_turn_failed = True
             note = f"CORE tool failed: {exc}"
             self.session.add_assistant(note)
             return note
@@ -571,6 +573,7 @@ class AssistantApp:
             summary = normalize_result(result.data)
             note = f"{intent.tool_name}: ok: {summary}"
         else:
+            self.last_turn_failed = True
             note = f"{intent.tool_name} failed: {result.error or 'unknown error'}"
         self.session.add_assistant(note)
         return note

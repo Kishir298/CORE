@@ -111,8 +111,19 @@ class SpeechBrainEmbeddingProvider(SpeakerEmbeddingProvider):
                 "ASIS_VOICE_SPEAKER_ENGINE=mock."
             ) from exc
         try:
+            import hashlib
+            from pathlib import Path
+            from asis.configuration import settings
+
+            source = Path(model).expanduser()
+            if not source.is_dir():
+                raise FileNotFoundError(
+                    "Configure ASIS_VOICE_SPEAKER_MODEL with a prepared local model directory; "
+                    "speaker models are not downloaded during startup."
+                )
+            savedir = settings.paths.cache / "speaker-models" / hashlib.sha256(str(source.resolve()).encode()).hexdigest()[:16]
             self._embedder = EncoderClassifier.from_hparams(
-                source=model, run_opts={"device": device}
+                source=str(source.resolve()), savedir=str(savedir), run_opts={"device": device}
             )
         except Exception as exc:
             from asis.voice.model_cache import model_missing_message

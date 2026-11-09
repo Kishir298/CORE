@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from asis.ai.manager import AIManager, create_provider
+from asis.ai.manager import AIManager
 from asis.ai.providers import AIProvider, MockAIProvider
 from asis.app.assistant import AssistantApp
 from asis.app.boot import BootError

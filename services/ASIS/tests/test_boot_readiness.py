@@ -73,6 +73,9 @@ def test_probe_forces_think_false_and_restores():
         captured.update(json or {})
 
         class R:
+            def close(self):
+                pass
+
             def raise_for_status(self):
                 pass
 

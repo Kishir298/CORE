@@ -154,6 +154,9 @@ def test_ollama_chat_request_uses_configured_model(monkeypatch):
     seen: dict = {}
 
     class _FakeResponse:
+        def close(self):
+            pass
+
         def raise_for_status(self):
             pass
 
@@ -186,6 +189,9 @@ def test_ollama_tool_enabled_request_uses_configured_model(monkeypatch):
     seen: dict = {}
 
     class _FakeResponse:
+        def close(self):
+            pass
+
         def raise_for_status(self):
             pass
 
@@ -219,6 +225,9 @@ def test_manager_plain_and_tool_requests_use_configured_model(monkeypatch):
     from asis.ai.providers.ollama import OllamaProvider
 
     class _FakeResponse:
+        def close(self):
+            pass
+
         def __init__(self, payload):
             self._payload = payload
 

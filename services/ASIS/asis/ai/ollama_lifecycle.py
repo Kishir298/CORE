@@ -122,7 +122,13 @@ def ensure_ollama(
     logger = get_logger("ai.ollama_lifecycle")
     mode = (managed or "auto").strip().lower()
 
+    from asis.pi.policy import enabled as pi_enabled
+
     def _default_up() -> bool:
+        if pi_enabled():
+            from asis.pi.runtime import request
+            request(host, "/api/tags")
+            return True
         return is_ollama_running(host)
 
     is_up = available_fn if available_fn is not None else _default_up
@@ -136,11 +142,27 @@ def ensure_ollama(
         # Treat check failure as down; proceed to managed decision.
         pass
 
+    if pi_enabled():
+        raise OllamaLifecycleError(
+            "Pi Ollama service is unavailable. Start the separately configured "
+            "SSD-backed service; automatic daemon launch is disabled in Pi mode."
+        )
     if mode not in ("auto", "on"):
         raise OllamaLifecycleError(
             "Ollama is not running and ASIS_OLLAMA_MANAGED=off. "
             "Start Ollama manually (`ollama serve`) or set ASIS_OLLAMA_MANAGED=auto."
         )
+
+    from urllib.parse import urlparse
+
+    parsed = urlparse(host)
+    if parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+        raise OllamaLifecycleError(
+            "Remote Ollama is unavailable; ASIS will not substitute a local server."
+        )
+    bind_name = bind_host.rsplit(":", 1)[0].strip("[]")
+    if bind_name not in ("localhost", "127.0.0.1", "::1"):
+        raise OllamaLifecycleError("Managed Ollama must bind to loopback.")
 
     factory = popen_factory if popen_factory is not None else _launch_serve
     try:

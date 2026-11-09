@@ -39,7 +39,16 @@ def resolve_workspace(explicit: str | Path | None = None) -> CodingWorkspace:
     from asis.configuration.settings import settings
 
     raw = str(explicit) if explicit else settings.coding.workspace
-    candidate = Path(raw).expanduser() if raw else Path.cwd()
+    if not raw:
+        import os
+        if any(os.getenv(f"ASIS_{part}_DIRECTORY", "").strip()
+               for part in ("DATA", "CONFIG", "CACHE", "LOG", "MEMORY", "RUNTIME")):
+            candidate = settings.paths.data / "workspace"
+            candidate.mkdir(parents=True, exist_ok=True)
+        else:
+            candidate = Path.cwd()
+    else:
+        candidate = Path(raw).expanduser()
     try:
         root = candidate.resolve()
     except OSError as exc:

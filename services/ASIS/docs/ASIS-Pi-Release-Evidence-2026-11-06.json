@@ -1,0 +1,41 @@
+{
+  "release": "2026-11-06",
+  "asis_baseline": "16976ed2215d26c8ca08d64fda49ad16389aaa5d",
+  "core_base": "CORE-HOST-Linux-RISARMS-Portal-2026-11-04.zip",
+  "source_attachment": "RISARMS-Portal-Setup-and-Changes.docx",
+  "executed_platform": "Linux x86_64 Python 3.12.14",
+  "tests": {
+    "asis": {
+      "tests": 965,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 18,
+      "passed": 947
+    },
+    "core": {
+      "tests": 43,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 43
+    }
+  },
+  "lint": "ruff check --select F asis tests: passed",
+  "compile": "compileall asis: passed",
+  "pi_test_method": "Simulated snapshots and Ollama responses; real loopback HTTP and Linux process locks. Non-Linux branches mocked. No real weights/Pi inference tested.",
+  "offline": "Fresh virtualenv install using --no-index and supplied wheels; installed help, doctor and calculation from /tmp passed. No physical network disconnection performed.",
+  "arm64": "CPython 3.11 Linux aarch64 base+AI wheels resolved only; installation and hardware execution not performed",
+  "core_patch": "Dry-run and application against original ZIP succeeded; all four resulting files match reviewed source byte for byte",
+  "github_written": false,
+  "public_deployment": false,
+  "docx": "Six rendered pages inspected; Markdown and DOCX delivered separately",
+  "not_executed": [
+    "Pi hardware/model benchmark",
+    "Windows/macOS execution",
+    "actual SSD mount failure/systemd startup",
+    "real RESCS storage deployment",
+    "native CORE-CLIENT",
+    "public ingress",
+    "arbitrary-code sandbox"
+  ]
+}

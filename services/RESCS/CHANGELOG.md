@@ -4,7 +4,11 @@ All notable changes to R.E.S.C.S. are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] - 2026-11-06
+
+### Added
+
+- Raspberry Pi storage foundation: signed CORE owner scope (`X-RESCS-Signature`), required `/srv/core` mount guard, systemd unit/installer and real CORE loopback validation; see `docs/RESCS-Pi-Handoff.md`
 
 ### Fixed
 

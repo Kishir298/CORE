@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock
 
-from asis.ai.ollama_lifecycle import OllamaOwnership, stop_owned_ollama
-from asis.tui.boot_orchestrator import BootOrchestrator, BootComponents
+from asis.ai.ollama_lifecycle import OllamaOwnership
+from asis.tui.boot_orchestrator import BootOrchestrator
 from asis.tui.state import AppState
 from asis.events import EventBus
 
@@ -34,7 +34,6 @@ class TestLifecycleCleanup:
     def test_ollama_ownership_flag_in_boot_report(self):
         """Boot report should include Ollama ownership flag."""
         from asis.app.boot import run_boot_sequence
-        from asis.ai.ollama_lifecycle import OllamaOwnership
         from asis.identity import build_identity
         from asis.memory import MemoryManager, MemoryStorage, MemoryDatabase
         from asis.app.assistant import AssistantApp
@@ -80,14 +79,13 @@ class TestLifecycleCleanup:
         orchestrator = BootOrchestrator(state=state, event_bus=event_bus, mock_mode=True)
         
         # Make voice pipeline fail
-        original_factory = orchestrator._voice_pipeline_factory
         class FailingFactory:
             def create(self, event_bus):
                 raise Exception("Voice pipeline failed")
         orchestrator._voice_pipeline_factory = FailingFactory()
         
         # Boot should complete but voice pipeline should be marked as ERROR
-        components = await orchestrator.run()
+        await orchestrator.run()
         
         assert state.voice_state.value == "ERROR"
         # Other components should still be initialized

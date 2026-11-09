@@ -58,6 +58,7 @@ def fixture(monkeypatch,tmp_path):
     digest='a'*64;lock=tmp_path/'queue.lock';lock.touch();monkeypatch.setenv('RISARMS_INFERENCE_LOCK',str(lock))
     path=tmp_path/'models.json';path.write_text(json.dumps({'fixture:1.5b-q4':{'digest':digest,'quantization':'Q4_K_M','peak_gib':2.5,'contexts':[2048],'generation_verified':True}}));monkeypatch.setenv('ASCS_PI_MANIFEST',str(path))
     monkeypatch.setattr(pi,'sample_resources',lambda:resources())
+    monkeypatch.setattr(pi,'deployment_supported',lambda:True)
     calls=[]
     class Client:
         def __init__(self,url):pass

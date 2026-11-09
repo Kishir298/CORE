@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import pytest
-from unittest.mock import Mock, patch
 
-from asis.ai.models import AIMessage, AIResponse
+from asis.ai.models import AIResponse
 from asis.ai.providers import MockAIProvider
 from asis.app.boot import BootError, verify_model_readiness
 from asis.tui.boot_orchestrator import BootOrchestrator
@@ -52,7 +51,6 @@ class TimeoutProvider(MockAIProvider):
         return True
     
     def chat(self, messages):
-        import asyncio
         # Use asyncio.sleep which can be cancelled, but run in executor so it blocks
         import time
         time.sleep(10)  # Longer than our timeout
@@ -80,7 +78,6 @@ async def test_boot_fails_when_ollama_unavailable():
     orchestrator = BootOrchestrator(state=state, event_bus=event_bus, mock_mode=False)
     
     # Override the provider factory to return our unavailable provider
-    original_boot_ai = orchestrator._boot_ai_provider
     
     async def mock_boot_ai():
         orchestrator._components.ai_provider = UnavailableProvider(model="test")

@@ -50,7 +50,10 @@ def test_cli_tool_execution_path(tmp_path, capsys, monkeypatch):
         def chat(self, messages):
             from asis.ai.models import AIResponse
 
-            return AIResponse(content=next(responses), model="mock", provider="mock")
+            return AIResponse(content="probe ready", model="mock", provider="mock")
+
+        def stream_chat(self, messages):
+            yield next(responses)
 
     monkeypatch.setattr(cli_main, "_provider", lambda *a, **k: SeqMock())
     code = entry(

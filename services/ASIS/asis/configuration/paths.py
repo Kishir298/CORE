@@ -32,7 +32,22 @@ def _with_name(base: Path, name: str) -> Path:
 
 def _apply_override(default: Path, override: Path | None) -> Path:
     """Return an explicit directory override, or the platform default."""
-    return override if override is not None else default
+    if override is not None:
+        return override
+    from . import environment
+
+    names = {"data": "DATA", "config": "CONFIG", "cache": "CACHE",
+             "logs": "LOG", "memory": "MEMORY", "runtime": "RUNTIME"}
+    part = names.get(default.name)
+    # platformdirs cache/config paths may already end in the requested name.
+    if part:
+        selected = environment.get_path(f"ASIS_{part}_DIRECTORY")
+        if selected is not None:
+            return selected
+        data = environment.get_path("ASIS_DATA_DIRECTORY")
+        if data is not None and part != "DATA":
+            return data / default.name
+    return default
 
 
 def get_data_directory(override: Path | None = None) -> Path:
