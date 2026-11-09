@@ -1,0 +1,24 @@
+{
+  "ASIS": {
+    "git_baseline": "16976ed2215d26c8ca08d64fda49ad16389aaa5d",
+    "baseline_is_release_head": false
+  },
+  "ASCS": {
+    "git_baseline": "5e3889360c17ee9ca6100b0b087e37430e7bbe48",
+    "baseline_is_release_head": false,
+    "updated_source_archive": "ASCS-Pi-Update-2026-11-06.zip",
+    "library_file_id": "libfile_259f3d156f9c81919574c7b4fab19c4c",
+    "sha256": "b8fcced5456aaba87a1d1ebf51a38562c74381973eafa285f826c189b144d534"
+  },
+  "RESCS": {
+    "git_baseline": "dfa7ff2b7ee1e39d2a17568f10ca9b1b6f36f0eb",
+    "baseline_is_release_head": false,
+    "updated_source_archive": "RESCS-0.4.0-Pi-2026-11-06.zip",
+    "library_file_id": "libfile_1766aeb272608191ae2bd7d747165023",
+    "sha256": "4a3e936a8658fd332f2b75cb435b9dada0a12c147c9ce7dbb883fbd10644aa17"
+  },
+  "TIVISS": {
+    "git_baseline": "53b0cb3eb702e4078d0ca4b13dc000f401815031",
+    "baseline_is_release_head": false
+  }
+}

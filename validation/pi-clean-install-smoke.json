@@ -1,0 +1,16 @@
+{
+  "result": "passed",
+  "platform": "Linux x86_64 Python 3.12",
+  "checks": [
+    "Clean environments install from portable SQLite requirements",
+    "Installed CORE and RESCS commands run outside source directory",
+    "First-owner setup, password reauthentication and real signed-scope record/file round trips",
+    "Private backend readiness",
+    "No PostgreSQL dependency installed"
+  ],
+  "not_tested": [
+    "ARM64 execution",
+    "systemd root installation",
+    "physical SSD mount/boot"
+  ]
+}

@@ -5,24 +5,41 @@ on:
   pull_request:
     branches: [main]
 jobs:
-  test:
+  core-host:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+    defaults:
+      run:
+        working-directory: CORE-HOST
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: Run lint
-        run: |
-          pip install ruff
-          ruff check --select F core tests
-      - name: Run tests
-        run: |
-          python -m pytest -q --tb=no
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[test]"
+      - run: pip install ruff
+      - run: ruff check --select F core tests
+      - run: python -m pytest -q --tb=no
+  core-client:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+    defaults:
+      run:
+        working-directory: CORE-CLIENT
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[test]"
+      - run: pip install ruff
+      - run: ruff check --select F client tests
+      - run: python -m pytest -q --tb=no

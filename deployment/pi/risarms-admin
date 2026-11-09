@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $EUID -eq 0 ]] || { echo 'Use sudo risarms-admin COMMAND.' >&2; exit 1; }
+case "${1:-doctor}" in doctor|pi-check|pi-benchmark|model-check|model-download) ;; *) echo 'Use systemctl for service startup; this helper is only for diagnostics/benchmarking.' >&2; exit 1;; esac
+set -a
+source /etc/risarms/core.env
+set +a
+exec runuser -u risarms-core -- /opt/risarms/core-venv/bin/core-host "$@"

@@ -1,0 +1,8 @@
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+sqlalchemy==2.0.52
+psycopg[binary]==3.3.4
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-multipart==0.0.32
+# s3 live backend needs: pip install boto3 (optional, FakeS3 used in tests)

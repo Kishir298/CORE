@@ -1,0 +1,35 @@
+[Unit]
+Description=RISARMS private RESCS on the data SSD
+After=network.target srv-core.mount
+BindsTo=srv-core.mount
+RequiresMountsFor=/srv/core/rescs
+ConditionPathIsMountPoint=/srv/core
+StartLimitIntervalSec=120
+StartLimitBurst=4
+
+[Service]
+Type=simple
+User=risarms-rescs
+Group=risarms-rescs
+WorkingDirectory=/srv/core/rescs
+EnvironmentFile=/etc/risarms/rescs.env
+ExecStartPre=/opt/risarms/rescs-venv/bin/python /opt/risarms/deployment/guard.py
+ExecStart=/opt/risarms/rescs-venv/bin/rescs serve
+ExecStartPost=/opt/risarms/rescs-venv/bin/python /opt/risarms/deployment/guard.py --ready http://127.0.0.1:8081/health/ready
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+MemoryHigh=384M
+MemoryMax=640M
+TasksMax=64
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/core/rescs
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

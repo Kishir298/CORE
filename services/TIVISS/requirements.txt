@@ -1,0 +1,7 @@
+# T.I.V.I.S.S. runtime dependencies.
+#
+# The core architecture is intentionally stdlib-only:
+#   - dataclasses, enum, datetime, uuid, abc, typing
+#
+# No runtime dependencies are required. Development tooling
+# (pytest) is listed separately in requirements-dev.txt.

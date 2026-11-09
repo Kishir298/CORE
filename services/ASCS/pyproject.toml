@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coding-agent"
+version = "0.3.0"
+description = "A.S.C.S. — A Smart Coding System: a local autonomous coding agent backed by Ollama."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+tui = ["windows-curses>=2.3; sys_platform == 'win32'"]
+
+[project.scripts]
+ascs = "agent.launch:main"
+risa = "agent.terminal:main"
+
+[tool.setuptools.packages.find]
+include = ["agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

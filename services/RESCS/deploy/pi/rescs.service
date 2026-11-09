@@ -1,0 +1,24 @@
+[Unit]
+Description=RESCS private SSD storage
+After=network.target srv-core.mount
+RequiresMountsFor=/srv/core
+BindsTo=srv-core.mount
+StartLimitIntervalSec=120
+StartLimitBurst=3
+[Service]
+User=rescs
+Group=rescs
+UMask=0077
+EnvironmentFile=/etc/rescs/rescs.env
+WorkingDirectory=/srv/core/rescs
+ExecStartPre=/usr/bin/mountpoint -q /srv/core
+ExecStart=/opt/rescs/venv/bin/rescs --config /etc/rescs/rescs.env serve
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/core/rescs
+[Install]
+WantedBy=multi-user.target

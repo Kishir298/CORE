@@ -1,0 +1,6 @@
+# A.S.I.S. document ingestion dependencies (optional).
+# Install only when parsing real PDF/DOCX files with full fidelity:
+#   pip install -r requirements/docs.txt
+# Parsers fall back to stdlib-only extraction when these are absent.
+pypdf>=4
+python-docx>=1.1

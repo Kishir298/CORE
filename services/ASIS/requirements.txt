@@ -1,0 +1,8 @@
+# A.S.I.S. runtime requirements (lightweight).
+# Base + AI. Voice, TUI and dev tooling are installed separately:
+#   pip install -r requirements/voice.txt
+#   pip install -r requirements/tui.txt
+#   pip install -r requirements/development.txt
+-r requirements/base.txt
+-r requirements/ai.txt
+-r requirements/tui.txt

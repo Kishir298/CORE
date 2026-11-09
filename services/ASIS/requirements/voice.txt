@@ -1,0 +1,17 @@
+# A.S.I.S. voice pipeline dependencies (optional/heavy).
+# Install only when using the voice subsystem:
+#   pip install -r requirements/voice.txt
+numpy
+scipy
+sounddevice
+soundfile
+silero-vad
+faster-whisper
+torch
+torchaudio
+speechbrain
+openwakeword
+pyttsx3
+pycaw; sys_platform == "win32"
+comtypes; sys_platform == "win32"
+pywin32; sys_platform == "win32"

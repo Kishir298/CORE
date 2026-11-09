@@ -1,0 +1,14 @@
+{
+  "name": "asis",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A.S.I.S. — A Smart Intelligence System (one-command launcher)",
+  "scripts": {
+    "asis": "node scripts/asis.mjs --tui",
+    "asis:voice": "node scripts/asis.mjs voice",
+    "asis:check": "node scripts/asis.mjs --check",
+    "asis:test": "node scripts/asis.mjs --test",
+    "asis:mock": "node scripts/asis.mjs --mock --tui",
+    "ASIS": "npm run asis --"
+  }
+}

@@ -1,0 +1,38 @@
+[Unit]
+Description=RISARMS C.O.R.E. Pi portal backend
+After=network.target srv-core.mount risarms-rescs.service
+Wants=risarms-rescs.service
+BindsTo=srv-core.mount
+RequiresMountsFor=/srv/core/core
+ConditionPathIsMountPoint=/srv/core
+StartLimitIntervalSec=120
+StartLimitBurst=4
+
+[Service]
+Type=simple
+User=risarms-core
+Group=risarms-core
+SupplementaryGroups=risarms-ai
+WorkingDirectory=/srv/core/core
+EnvironmentFile=/etc/risarms/core.env
+ExecStartPre=/opt/risarms/core-venv/bin/python /opt/risarms/deployment/guard.py
+ExecStartPre=/opt/risarms/core-venv/bin/python /opt/risarms/deployment/guard.py --ready http://127.0.0.1:8081/health/ready
+ExecStart=/opt/risarms/core-venv/bin/core-host --gateway-only --no-browser
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+KillMode=control-group
+MemoryHigh=384M
+MemoryMax=640M
+TasksMax=64
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/core/core /run/risarms-inference
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

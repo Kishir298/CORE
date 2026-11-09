@@ -1,0 +1,66 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# TLS material (never commit private keys or certs)
+*.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.cer
+
+# Remembered external-device files (real device files live in home dir)
+.risarms-device.json
+*-device.json
+device.json
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Local data
+*.db
+rescs_dev.db
+rescs_dev.db-*
+rescs_*_storage/
+
+# OS files
+Thumbs.db
+.DS_Store
+# Stagnant artifacts
+.pytest_cache/
+__pycache__/
+AUDIT_REPORT.md
+temp_*.txt
+test_output.txt
+test_results.txt
+
+# Sensitive files
+tls/
+*.pem
+*.key
+*.crt

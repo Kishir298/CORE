@@ -1,0 +1,5 @@
+# A.S.I.S. AI provider dependencies.
+# Required when using the Ollama model provider.
+# (The provider talks to Ollama over HTTP via requests; the `ollama`
+# client package is intentionally not used.)
+requests>=2.31

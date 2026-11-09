@@ -1,0 +1,27 @@
+[Unit]
+Description=C.O.R.E. authenticated Linux server
+After=network.target
+
+[Service]
+Type=simple
+User=core
+Group=core
+StateDirectory=core
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/core
+Environment=CORE_WEB_DATA=/var/lib/core/web
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/core/core.env
+ExecStart=/opt/core/venv/bin/core-host --gateway-only --no-browser
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

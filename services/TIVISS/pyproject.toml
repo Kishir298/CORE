@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tiviss"
+version = "0.2.0"
+description = "Though I'm Vanquished, I'm Still Stronger - an independent AI agent of the R.I.S.A.R.M.S. ecosystem"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Kishir298" }]
+keywords = ["agent", "ai", "risarms", "handover", "identity"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "ruff",
+]
+
+[project.scripts]
+tiviss = "tiviss.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["tiviss*", "tiviss.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+]
+ignore = [
+    "B008",
+]

@@ -1,0 +1,6 @@
+# A.S.I.S. base runtime dependencies.
+# These are lightweight and always required.
+platformdirs>=4
+python-dotenv>=1.0
+# Local offline mathematics (calculator engine; pure Python, no network).
+sympy>=1.13

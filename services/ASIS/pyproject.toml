@@ -1,0 +1,91 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asis"
+version = "0.1.0"
+description = "A.S.I.S. - A Smart Intelligence System (intelligence layer of the R.I.S.A.R.M.S. ecosystem)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Rishik" }]
+keywords = ["ai", "assistant", "risarms", "intelligence"]
+dependencies = [
+    "platformdirs>=4",
+    "python-dotenv>=1.0",
+    "sympy>=1.13",
+]
+
+[project.optional-dependencies]
+ai = [
+    "requests>=2.31",
+]
+voice = [
+    "numpy",
+    "scipy",
+    "sounddevice",
+    "soundfile",
+    "silero-vad",
+    "faster-whisper",
+    "torch",
+    "torchaudio",
+    "speechbrain",
+    "openwakeword",
+    "pyttsx3",
+    "pycaw; sys_platform == 'win32'",
+    "comtypes; sys_platform == 'win32'",
+    "pywin32; sys_platform == 'win32'",
+]
+docs = [
+    "pypdf>=4",
+    "python-docx>=1.1",
+]
+tui = [
+    "textual>=0.70",
+    "textual-dev>=0.70",
+    "tomli>=2.0",
+    "tomli-w>=1.0",
+]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "pytest-asyncio>=0.23",
+    "ruff",
+    "black",
+]
+
+[project.scripts]
+asis = "asis.cli.main:entry"
+asis-tui = "asis.tui.__main__:entry"
+
+[tool.setuptools.packages.find]
+include = ["asis*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+asyncio_mode = "auto"
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+]
+ignore = [
+    "B008",
+]

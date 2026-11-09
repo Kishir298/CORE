@@ -1,0 +1,104 @@
+# Python virtual environments
+.venv/
+.venv-windows/
+.venv-linux/
+.venv-macos/
+.venv-macos.bak/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.cer
+
+# Remembered external-device files (real device files live in home dir)
+.risarms-device.json
+*-device.json
+device.json
+
+# VS Code / IDEs
+.vscode/
+.idea/
+.opencode/
+node_modules/
+
+# macOS / Windows
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# AI / model files
+models/
+model/
+*.gguf
+*.safetensors
+*.bin
+
+# Audio recordings / generated audio
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+!tests/fixtures/**
+!docs/samples/**
+
+# Speaker embeddings / generated vectors
+speaker_embeddings/
+*.npy
+*.npz
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv lock (uv used only as pip-installer; requirements/*.txt canonical)
+uv.lock
+
+# Coverage
+.coverage
+htmlcov/
+xmlcov/
+
+# Runtime databases / temp data
+*.db
+*.sqlite
+*.sqlite3
+*.tmp
+
+# ASIS persistent user data (lives outside the repo)
+data/
+runtime/
+# Stagnant artifacts
+.pytest_cache/
+__pycache__/
+AUDIT_REPORT.md
+temp_*.txt
+test_output.txt
+test_results.txt
+
+# Sensitive files
+tls/
+*.pem
+*.key
+*.crt

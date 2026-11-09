@@ -1,0 +1,54 @@
+{
+  "platform": "Linux x86_64 Python 3.12",
+  "suites": {
+    "CORE-HOST-pi-release": {
+      "tests": 840,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0
+    },
+    "CORE-CLIENT-pi-final": {
+      "tests": 200,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0
+    },
+    "RESCS-pi-final": {
+      "tests": 316,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 4
+    },
+    "pi-final-contracts": {
+      "tests": 65,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0
+    }
+  },
+  "clean_installed_smoke": {
+    "result": "passed",
+    "platform": "Linux x86_64 Python 3.12",
+    "checks": [
+      "Clean environments install from portable SQLite requirements",
+      "Installed CORE and RESCS commands run outside source directory",
+      "First-owner setup, password reauthentication and real signed-scope record/file round trips",
+      "Private backend readiness",
+      "No PostgreSQL dependency installed"
+    ],
+    "not_tested": [
+      "ARM64 execution",
+      "systemd root installation",
+      "physical SSD mount/boot"
+    ]
+  },
+  "arm64_dependencies": "CPython 3.13 manylinux binary resolution passed; not executed",
+  "hardware": "not tested",
+  "browser": "visual run blocked by system socket restrictions",
+  "deployment": "not installed on user Pi; no live URL",
+  "github": "no source pushed",
+  "ASCS_full_suite": {
+    "status": "blocked",
+    "reason": "Automatic approval review rejected an attempted external api.openai.com connection during the suite; no completed full-suite pass."
+  }
+}

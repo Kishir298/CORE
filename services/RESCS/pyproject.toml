@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rescs"
+version = "0.4.0"
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "sqlalchemy>=2.0,<3", "pydantic-settings>=2.0,<3", "python-multipart>=0.0.18"]
+
+description = "Rishik's Efficient System for Cloud Storage"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Kishir298" }]
+
+[project.scripts]
+rescs = "rescs.cli:main"
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.28"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rescs = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"

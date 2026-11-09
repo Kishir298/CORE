@@ -94,3 +94,18 @@ tls/
 *.pem
 *.key
 *.crt
+
+# Combined CORE monorepo
+CORE-HOST/.venv/
+CORE-CLIENT/.venv/
+services/*/.venv/
+services/*/dist/
+services/*/build/
+services/*/*.egg-info/
+services/ASCS/ruff_out.txt
+services/ASCS/ruff_output.txt
+*.zip
+*.bundle
+.incoming/
+.backups/
+old-versions/

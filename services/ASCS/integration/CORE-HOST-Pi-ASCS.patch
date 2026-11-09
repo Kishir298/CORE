@@ -1,0 +1,10 @@
+--- a/core/web/services.py
++++ b/core/web/services.py
+@@ -94,6 +94,7 @@
+             if mode not in ("plan", "build", "auto"): raise ValueError("Invalid coding mode.")
+             env["AGENT_EXPERIENCE_PATH"] = str(home / "ascs-experiences.jsonl")
+             env["AGENT_STOP_OLLAMA_ON_EXIT"] = "false"
++            env["ASCS_PI_MODE"] = "1"  # Pi deployment: no arbitrary coding tools
+             env["AGENT_PROFILE_DIRECTORY"] = str(home / "ascs")
+             env["AGENT_TUI_STATE_PATH"] = str(home / "ascs" / "tui_state.json")
+             env["AGENT_NONINTERACTIVE"] = "1"

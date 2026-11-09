@@ -1,0 +1,37 @@
+name: Live Tests
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 0'  # Weekly Sunday 3 AM
+jobs:
+  live-tests:
+    if: ${{ secrets.ASIS_REAL_VOICE_TESTS == '1' || secrets.ASIS_TRANSLATION_LIVE == '1' || secrets.ASIS_WEB_LIVE == '1' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run live voice tests
+        if: ${{ secrets.ASIS_REAL_VOICE_TESTS == '1' }}
+        env:
+          ASIS_REAL_VOICE_TESTS: ${{ secrets.ASIS_REAL_VOICE_TESTS }}
+        run: |
+          pytest tests/test_voice_real.py -q -v
+      - name: Run live translation tests
+        if: ${{ secrets.ASIS_TRANSLATION_LIVE == '1' }}
+        env:
+          ASIS_TRANSLATION_LIVE: ${{ secrets.ASIS_TRANSLATION_LIVE }}
+        run: |
+          pytest tests/test_translation_live.py -q -v
+      - name: Run live web tests
+        if: ${{ secrets.ASIS_WEB_LIVE == '1' }}
+        env:
+          ASIS_WEB_LIVE: ${{ secrets.ASIS_WEB_LIVE }}
+        run: |
+          pytest tests/test_web_live.py -q -v
