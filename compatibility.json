@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "project": "CORE",
+  "display_name": "C.O.R.E. — Communication, Organization and Resource Engine",
+  "version": "0.5.0",
+  "release_channel": "stable",
+  "standalone": true,
+  "components": {
+    "host": {
+      "package": "core",
+      "version": "0.5.0",
+      "console_scripts": ["core-host"]
+    },
+    "client": {
+      "package": "core-client",
+      "version": "0.5.0",
+      "console_scripts": ["core-client"]
+    }
+  },
+  "supported_operating_systems": [
+    {
+      "os": "windows",
+      "architectures": ["x86_64", "arm64"],
+      "minimum_version": "10 22H2",
+      "notes": "Host and client run as user-level processes; no WSL required."
+    },
+    {
+      "os": "macos",
+      "architectures": ["x86_64", "arm64"],
+      "minimum_version": "12.0",
+      "notes": "Client desktop and browser modes are supported on both architectures."
+    },
+    {
+      "os": "linux",
+      "architectures": ["x86_64", "arm64"],
+      "minimum_version": "glibc 2.28",
+      "notes": "Host server deployment package targets systemd on Linux x86_64/ARM64."
+    }
+  ],
+  "runtime": {
+    "kind": "python",
+    "minimum_version": "3.10",
+    "install_methods": ["pip", "pipx", "standalone-executable", "debian-package"]
+  },
+  "core_protocol": {
+    "version": "0.4.0",
+    "supported_versions": ["0.3.0", "0.4.0"],
+    "negotiated_on_handshake": true,
+    "source": "CORE/CORE-HOST/core/communication/protocol.py"
+  },
+  "integrations": ["rescs", "asis", "ascs", "tiviss"],
+  "build_metadata": {
+    "builder": "GitHub Actions",
+    "artifact_naming": "CORE-{component}-{version}-{os}-{arch}-{format}",
+    "checksums": "SHA-256",
+    "sbom": "CycloneDX JSON"
+  }
+}

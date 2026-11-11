@@ -13,7 +13,7 @@ def default_data():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="core-host", description="Run the C.O.R.E. host and authenticated portal.")
-    parser.add_argument("command", nargs="?", choices=("start", "doctor", "model-check", "model-download", "init-owner", "pi-check", "pi-benchmark"), default="start")
+    parser.add_argument("command", nargs="?", choices=("start", "setup", "doctor", "model-check", "model-download", "init-owner", "pi-check", "pi-benchmark"), default="start")
     parser.add_argument("--data", type=Path, default=None, help="Persistent portal data directory.")
     parser.add_argument("--config", type=Path, help="Optional native CORE YAML configuration.")
     parser.add_argument("--port", type=int, default=8780)
@@ -71,8 +71,25 @@ def main(argv=None):
                 print("Default ASIS/TIVISS model configured:", model)
             except (OSError, ValueError, RuntimeError) as exc: parser.error(str(exc))
         return 0
+    if args.command == "setup":
+        # Local, offline preparation only: never binds a socket or starts services.
+        from core.web.gateway import Gateway
+        data.mkdir(parents=True, exist_ok=True)
+        try:
+            data.chmod(0o700)
+        except OSError:
+            pass
+        gateway = Gateway(directory=data, port=args.port)
+        gateway.close()
+        print("C.O.R.E. host setup complete.")
+        print("Portal data:", data)
+        print("Local URL:", f"http://127.0.0.1:{args.port}")
+        print("Next: core-host init-owner --owner-seed FILE, then core-host start")
+        return 0
     if args.command == "doctor":
+        import platform
         print("C.O.R.E. host command is installed.")
+        print("Platform:", f"{platform.system()} {platform.machine()}")
         print("Portal data:", data)
         print("Portal settings:", "present" if (data / "gateway.json").is_file() else "first-run setup required")
         print("Local URL:", f"http://127.0.0.1:{args.port}")

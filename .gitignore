@@ -109,3 +109,14 @@ services/ASCS/ruff_output.txt
 .incoming/
 .backups/
 old-versions/
+
+# Release artifacts and packaging output (built by CI, never committed)
+*.spec
+*.dmg
+*.msi
+*.AppImage
+*.deb
+*.rpm
+SHA256SUMS
+sbom.cdx.json
+release/

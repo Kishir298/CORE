@@ -1,0 +1,211 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel"
+        required: true
+        default: development
+        type: choice
+        options: [stable, beta, development]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate source
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      channel: ${{ steps.meta.outputs.channel }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Derive version and channel
+        id: meta
+        env:
+          INPUT_CHANNEL: ${{ inputs.channel }}
+        run: |
+          python - <<'PY'
+          import json, os, re, tomllib
+          from pathlib import Path
+          host = tomllib.loads(Path("CORE-HOST/pyproject.toml").read_text())["project"]
+          client = tomllib.loads(Path("CORE-CLIENT/pyproject.toml").read_text())["project"]
+          version = host["version"]
+          if client["version"] != version:
+              raise SystemExit("CORE-HOST and CORE-CLIENT versions differ")
+          manifest = json.loads(Path("compatibility.json").read_text())
+          if manifest["version"] != version:
+              raise SystemExit("compatibility.json version is out of date")
+          host_version = __import__("re").search(
+              r'__version__ = "([^"]+)"', Path("CORE-HOST/core/version.py").read_text()
+          ).group(1)
+          if host_version != version:
+              raise SystemExit(f"core/version.py {host_version} != pyproject {version}")
+          ref = os.environ.get("GITHUB_REF_NAME", "")
+          if ref.startswith("v"):
+              tag_version = re.split(r"-(stable|beta)", ref[1:])[0]
+              if tag_version != version:
+                  raise SystemExit(f"Tag {ref} does not match version {version}")
+          channel = os.environ.get("INPUT_CHANNEL") or ("beta" if "-beta" in ref else "stable")
+          prerelease = "true" if channel != "stable" or "-" in ref else "false"
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as fh:
+              fh.write(f"version={version}\nchannel={channel}\nprerelease={prerelease}\n")
+          PY
+      - name: Install and test
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "CORE-HOST[test]" -e "CORE-CLIENT[test]" ruff
+          ruff check --select F CORE-HOST/core CORE-HOST/tests CORE-CLIENT/client CORE-CLIENT/tests
+          (cd CORE-HOST && python -m pytest -q --tb=no)
+          (cd CORE-CLIENT && python -m pytest -q --tb=no)
+
+  wheel:
+    name: Python wheels and server bundle
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip build
+      - run: python -m build --wheel --sdist CORE-HOST
+      - run: python -m build --wheel --sdist CORE-CLIENT
+      - name: Assemble artifacts
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts server
+          cp CORE-HOST/dist/*.whl "artifacts/CORE-Host-${VERSION}-python-wheel.whl"
+          cp CORE-CLIENT/dist/*.whl "artifacts/CORE-Client-${VERSION}-python-wheel.whl"
+          cp CORE-HOST/dist/*.tar.gz "artifacts/CORE-Host-${VERSION}-python-sdist.tar.gz"
+          cp CORE-CLIENT/dist/*.tar.gz "artifacts/CORE-Client-${VERSION}-python-sdist.tar.gz"
+          cp CORE-HOST/dist/*.whl server/
+          cp CORE-HOST/deploy/linux/install-server.sh CORE-HOST/deploy/linux/core.service server/
+          tar -czf "artifacts/CORE-Server-${VERSION}-linux-x64.tar.gz" -C server .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CORE-${{ needs.validate.outputs.version }}-python
+          path: artifacts/*
+          if-no-files-found: error
+
+  build:
+    name: Build ${{ matrix.platform }}-${{ matrix.arch }}
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2022, platform: windows, arch: x64 }
+          - { os: windows-11-arm, platform: windows, arch: arm64, experimental: true }
+          - { os: macos-15-intel, platform: macos, arch: x86_64 }
+          - { os: macos-14, platform: macos, arch: arm64 }
+          - { os: ubuntu-22.04, platform: linux, arch: x64 }
+          - { os: ubuntu-24.04-arm, platform: linux, arch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e CORE-HOST -e CORE-CLIENT pyinstaller
+      - name: Build host and client executables
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --name core-host \
+            --collect-submodules core --collect-data core \
+            --distpath dist/host scripts/standalone_host.py
+          python -m PyInstaller --noconfirm --clean --onefile --name core-client \
+            --collect-submodules client --collect-data client --collect-submodules client.desktop \
+            --distpath dist/client scripts/standalone_client.py
+      - name: Package artifacts
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          if [ "$PLATFORM" = "windows" ]; then
+            (cd dist/host && 7z a "../../artifacts/CORE-Host-${VERSION}-${PLATFORM}-${ARCH}.zip" core-host.exe)
+            (cd dist/client && 7z a "../../artifacts/CORE-Client-${VERSION}-${PLATFORM}-${ARCH}.zip" core-client.exe)
+          else
+            tar -czf "artifacts/CORE-Host-${VERSION}-${PLATFORM}-${ARCH}.tar.gz" -C dist/host core-host
+            tar -czf "artifacts/CORE-Client-${VERSION}-${PLATFORM}-${ARCH}.tar.gz" -C dist/client core-client
+          fi
+      - name: Generate SHA-256 checksums
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          cd artifacts
+          for component in Host Client; do
+            for file in CORE-${component}-${VERSION}-${PLATFORM}-${ARCH}.*; do
+              sha256sum "$file" > "$file.sha256"
+            done
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CORE-${{ needs.validate.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [validate, build, wheel]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Generate SBOM
+        run: |
+          python -m pip install --upgrade pip cyclonedx-bom
+          python -m pip install -e CORE-HOST -e CORE-CLIENT
+          cyclonedx-py environment -o sbom.cdx.json --of JSON
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: CORE-*
+          merge-multiple: true
+      - name: Collect checksums
+        run: |
+          cd artifacts
+          rm -f SHA256SUMS
+          sha256sum * > SHA256SUMS
+          cp ../sbom.cdx.json .
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          CHANNEL: ${{ needs.validate.outputs.channel }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          flags=(--title "CORE ${VERSION} (${CHANNEL})" --notes "Automated ${CHANNEL} release for CORE ${VERSION}.")
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          gh release create "${GITHUB_REF_NAME}" artifacts/* "${flags[@]}"

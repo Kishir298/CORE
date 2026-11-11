@@ -27,6 +27,16 @@ def test_explicit_configuration_still_resolves(tmp_path):
     assert CoreApplication(config_path=config, discover_config=False)._resolve_config_path() == config
 
 
+def test_setup_creates_private_data_without_network(tmp_path, monkeypatch, capsys):
+    target = tmp_path / 'data'
+    monkeypatch.delenv('CORE_WEB_DATA', raising=False)
+    assert main(['setup', '--data', str(target)]) == 0
+    assert (target / 'gateway.json').is_file()
+    out = capsys.readouterr().out
+    assert 'setup complete' in out.lower()
+    assert str(target) in out
+
+
 def test_doctor_does_not_start_network_or_create_data(tmp_path, capsys):
     target=tmp_path/'missing'
     assert main(['doctor','--data',str(target)]) == 0

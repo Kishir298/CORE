@@ -1,4 +1,9 @@
 import pytest
+
+# The desktop layout module imports tkinter; skip on hosts whose Python was
+# built without Tk instead of aborting collection for the whole suite.
+pytest.importorskip("tkinter")
+
 from client.desktop.layout import initial_geometry,flow_positions,wrap_text
 
 @pytest.mark.parametrize('width,height',[(320,240),(480,800),(800,480),(1280,720),(3840,2160)])

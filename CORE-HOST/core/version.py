@@ -13,13 +13,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 # Canonical alias: core.cli.main and docs reference CORE_VERSION.
 CORE_VERSION = __version__
 
 # All versions that have shipped or are supported for negotiation
-SUPPORTED_VERSIONS = ["0.2.0", "0.2.1", "0.3.0", "0.4.0"]
+SUPPORTED_VERSIONS = ["0.2.0", "0.2.1", "0.3.0", "0.4.0", "0.5.0"]
 LEGACY_VERSIONS = ["0.1.0", "0.2.0", "0.2.1"]
 
 # Minimum version that supports new features (TLS + auto-assign + Http)

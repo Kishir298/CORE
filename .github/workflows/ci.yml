@@ -43,3 +43,28 @@ jobs:
       - run: pip install ruff
       - run: ruff check --select F client tests
       - run: python -m pytest -q --tb=no
+
+  platform-smoke:
+    name: Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install host and client
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e CORE-HOST -e CORE-CLIENT
+      - name: Verify installed commands from another directory
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          core-host --help
+          core-host doctor --data "${{ runner.temp }}/core-data"
+          core-client --help
+          core-client doctor

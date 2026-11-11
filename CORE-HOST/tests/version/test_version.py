@@ -14,14 +14,15 @@ from core.version import (
 )
 
 
-def test_version_is_0_4_0():
-    assert __version__ == "0.4.0"
+def test_version_is_0_5_0():
+    assert __version__ == "0.5.0"
 
 
 def test_supported_versions_include_legacy_and_current():
     assert "0.2.1" in SUPPORTED_VERSIONS
     assert "0.3.0" in SUPPORTED_VERSIONS
     assert "0.4.0" in SUPPORTED_VERSIONS
+    assert "0.5.0" in SUPPORTED_VERSIONS
     assert "0.2.1" in LEGACY_VERSIONS
     assert "0.3.0" not in LEGACY_VERSIONS
     assert "0.4.0" not in LEGACY_VERSIONS
@@ -45,6 +46,7 @@ def test_is_supported_and_legacy():
     assert is_legacy("0.2.1") is True
     assert is_legacy("0.3.0") is False
     assert is_legacy("0.4.0") is False
+    assert is_legacy("0.5.0") is False
     assert is_legacy("0.1.0") is True
 
 
@@ -55,8 +57,9 @@ def test_negotiate_preserves_legacy():
     assert negotiate("0.2.1") == "0.2.1"
     assert negotiate("0.3.0") == "0.3.0"
     assert negotiate("0.4.0") == "0.4.0"
+    assert negotiate("0.5.0") == "0.5.0"
     # Higher clamps to latest
-    assert negotiate("0.9.0") == "0.4.0"
+    assert negotiate("0.9.0") == "0.5.0"
     # Invalid falls back to legacy
     assert negotiate("invalid") == "0.2.1"
 
@@ -94,7 +97,7 @@ def test_runtime_version_service_negotiates():
         )
         assert legacy.payload["success"] is True
         assert legacy.payload["result"]["negotiated"] == "0.2.1"
-        assert legacy.payload["result"]["version"] == "0.4.0"
+        assert legacy.payload["result"]["version"] == "0.5.0"
 
         # 0.3.0 client → negotiated 0.3.0
         cur = app.communication.send(
