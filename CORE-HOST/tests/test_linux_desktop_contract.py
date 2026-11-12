@@ -18,8 +18,8 @@ except ImportError:
     # Standalone host CI can validate its HTTP contract without installing the client.
     HAS_DESKTOP = False
     from http.cookiejar import CookieJar
-    from urllib.request import build_opener, HTTPCookieProcessor, Request, ProxyHandler
     from urllib.error import HTTPError
+    from urllib.request import HTTPCookieProcessor, ProxyHandler, Request, build_opener
     class RemoteError(ConnectionError):
         def __init__(self,message,status=0):super().__init__(message);self.status=status
     class Remote:

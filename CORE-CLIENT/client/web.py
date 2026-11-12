@@ -1,8 +1,8 @@
 """Browser client for the authenticated C.O.R.E. portal; no host internals."""
 import argparse
 import os
-from urllib.parse import urlparse
 import webbrowser
+from urllib.parse import urlparse
 
 
 def validate_url(url):

@@ -5,8 +5,8 @@ import hashlib
 import json
 import re
 import urllib.error
-from urllib.parse import urlencode, urlparse
 import urllib.request
+from urllib.parse import urlencode, urlparse
 
 MAX_BYTES = 8 * 1024 * 1024
 

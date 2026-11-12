@@ -1,16 +1,16 @@
 """Authenticated C.O.R.E. web workspace; backend agents stay independent."""
 from __future__ import annotations
 
-from collections import defaultdict, deque
 import hmac
-from http.cookies import SimpleCookie
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
-from pathlib import Path
 import secrets
 import threading
 import time
+from collections import defaultdict, deque
+from http.cookies import SimpleCookie
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .accounts import Accounts

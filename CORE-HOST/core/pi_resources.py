@@ -3,13 +3,13 @@
 These are project admission estimates, not benchmark claims. Exact installed
 model digests need a locally created benchmark receipt before ordinary jobs.
 """
-from collections import deque
 import json
 import os
-from pathlib import Path
 import re
 import threading
 import time
+from collections import deque
+from pathlib import Path
 from urllib.request import ProxyHandler, Request, build_opener
 
 GIB=1024**3
@@ -159,6 +159,7 @@ def machine_id():
 def benchmark(data,model,service,approve=False):
     """Explicit local smoke/measurement. Stop CORE first to avoid a second queue."""
     import socket
+
     from core.inference import ChatStream
     with socket.socket() as probe:
         probe.settimeout(.5)

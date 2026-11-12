@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
 from core import pi_resources as pr
 from core.web.services import Services
 

@@ -8,8 +8,8 @@ import pytest
 
 from core.web.services import Job, Services
 from core.web.storage import RescsStorage
-from tests.test_linux_desktop_contract import owner, server as server
-from tests.test_linux_desktop_contract import Remote, RemoteError
+from tests.test_linux_desktop_contract import Remote, RemoteError, owner
+from tests.test_linux_desktop_contract import server as server
 
 
 def test_registration_requires_approval_and_members_have_only_messaging_storage(server):

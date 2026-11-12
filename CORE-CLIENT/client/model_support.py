@@ -2,12 +2,12 @@
 import ctypes
 import json
 import os
-from pathlib import Path
 import platform
 import re
 import shutil
 import subprocess
-from urllib.request import build_opener, ProxyHandler, Request
+from pathlib import Path
+from urllib.request import ProxyHandler, Request, build_opener
 
 # These are CORE's conservative planning estimates, not vendor guarantees.
 # Memory includes headroom for a bounded context; disk allows staging overhead.

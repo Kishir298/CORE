@@ -1,10 +1,16 @@
 """Authenticated native API client; cookies and credentials stay in memory."""
-from http.cookiejar import CookieJar
 import json
 import threading
+from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, build_opener, HTTPCookieProcessor, HTTPRedirectHandler, ProxyHandler
+from urllib.request import (
+    HTTPCookieProcessor,
+    HTTPRedirectHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
+)
 
 from ..web import validate_url
 

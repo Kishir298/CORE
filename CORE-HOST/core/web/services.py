@@ -1,18 +1,18 @@
 """Allowlisted local service commands with profile workspaces and live output."""
 from __future__ import annotations
 
-from collections import deque
 import codecs
 import json
-from dataclasses import dataclass, field
 import os
-from pathlib import Path
 import signal
 import subprocess
 import sys
 import threading
 import time
 import uuid
+from collections import deque
+from dataclasses import dataclass, field
+from pathlib import Path
 
 CATALOG = {
     "asis": ("A.S.I.S.", "Personal assistant", "ASIS"),

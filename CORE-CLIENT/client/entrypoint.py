@@ -33,7 +33,8 @@ def main(argv=None):
     options = parser.parse_args(args)
     if options.command in ("model-check", "model-download"):
         import json
-        from .model_support import system_report, download_recommended
+
+        from .model_support import download_recommended, system_report
         report = system_report(settings_path().parent)
         print(json.dumps(report, indent=2))
         if options.command == "model-download":

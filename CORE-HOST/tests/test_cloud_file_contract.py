@@ -1,17 +1,17 @@
 import base64
-from email.parser import BytesParser
-from email.policy import default
 import hashlib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
+from email.parser import BytesParser
+from email.policy import default
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from core.web.storage import RescsStorage
-from tests.test_linux_desktop_contract import owner, server as server
-from tests.test_linux_desktop_contract import Remote, RemoteError
+from tests.test_linux_desktop_contract import Remote, RemoteError, owner
+from tests.test_linux_desktop_contract import server as server
 
 
 @pytest.fixture

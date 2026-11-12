@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from client.model_support import recommend, system_report, download_recommended
 from client.desktop.store import LocalStore
+from client.model_support import download_recommended, recommend, system_report
 
 
 @pytest.mark.parametrize('ram,disk,expected',[(2,100,None),(4,10,'qwen3.5:0.8b'),(8,10,'qwen3.5:2b'),(16,20,'qwen3.5:9b'),(32,6,'qwen3.5:2b'),(32,1,None)])

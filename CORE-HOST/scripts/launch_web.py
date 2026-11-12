@@ -1,9 +1,9 @@
 """One-command host bootstrap. Run from any current working directory."""
 import json
-from pathlib import Path
 import subprocess
 import sys
 import venv
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 

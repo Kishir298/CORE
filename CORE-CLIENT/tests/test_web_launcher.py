@@ -1,4 +1,5 @@
 import pytest
+
 from client.web import main, validate_url
 
 

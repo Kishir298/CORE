@@ -4,7 +4,8 @@ import pytest
 # built without Tk instead of aborting collection for the whole suite.
 pytest.importorskip("tkinter")
 
-from client.desktop.layout import initial_geometry,flow_positions,wrap_text
+from client.desktop.layout import flow_positions, initial_geometry, wrap_text
+
 
 @pytest.mark.parametrize('width,height',[(320,240),(480,800),(800,480),(1280,720),(3840,2160)])
 def test_initial_window_fits_small_and_large_displays(width,height):

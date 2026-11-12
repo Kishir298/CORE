@@ -4,9 +4,9 @@ Extract CORE-HOST and CORE-CLIENT beside one another to enable these checks.
 This does not test the OS listener, TLS negotiation, or the firewall.
 """
 import json
-from pathlib import Path
 import struct
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -17,9 +17,10 @@ if not (client_repo / "client").is_dir():
 sys.path.insert(0, str(client_repo))
 
 from client.core_device_client import CoreDeviceClient, DeviceClientError
+
 from core.communication.connection import ConnectionSession
 from core.communication.serializer import MessageSerializer
-from core.communication.tcp import TcpTransport, HANDSHAKE_TYPE
+from core.communication.tcp import HANDSHAKE_TYPE, TcpTransport
 from core.security import Identity, IdentityType, Permission, SecurityManager
 from core.security.context import authenticated_transport
 from core.security.provider import TokenAuthenticationProvider

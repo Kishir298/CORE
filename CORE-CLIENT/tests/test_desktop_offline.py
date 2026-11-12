@@ -1,7 +1,7 @@
 import os
-from pathlib import Path
 import socket
 import threading
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest

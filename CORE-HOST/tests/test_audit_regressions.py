@@ -17,7 +17,7 @@ from core.configuration.validator import ConfigurationValidator
 from core.data.errors import DataAccessDenied, DataRetrievalFailed
 from core.data.requests import validate_data_request
 from core.data.rescs_reader import HttpDataReader
-from core.portal.server import HostPortal, INDEX_HTML
+from core.portal.server import INDEX_HTML, HostPortal
 from core.resources.models import Resource
 from core.scheduler.models import AgentProfile
 from core.scheduler.scheduler import AgentScheduler, NoSuitableAgent
@@ -186,6 +186,7 @@ def test_registry_iterator_is_a_snapshot():
 
 def test_persistent_credential_file_is_private(tmp_path):
     import os
+
     from core.rescs.adapter import FileRescsAdapter
     path = tmp_path / "rescs.json"
     adapter = FileRescsAdapter(path)
@@ -213,7 +214,13 @@ def test_proxy_import_and_owner_prefix_boundary():
 
 @pytest.mark.parametrize("permission,expected", [("read", True), ("write", False)])
 def test_verified_session_authorizes_without_provisioning_secret(permission, expected):
-    from core.security import Identity, IdentityType, Permission, SecurityManager, SecurityPolicy
+    from core.security import (
+        Identity,
+        IdentityType,
+        Permission,
+        SecurityManager,
+        SecurityPolicy,
+    )
     from core.security.context import authenticated_transport
     from core.security.provider import TokenAuthenticationProvider
     from core.services.dispatch import ServiceDispatcher
@@ -236,7 +243,13 @@ def test_verified_session_authorizes_without_provisioning_secret(permission, exp
 
 
 def test_remote_read_cannot_bypass_owner_scope_via_raw_rescs():
-    from core.security import Identity, IdentityType, Permission, SecurityManager, SecurityPolicy
+    from core.security import (
+        Identity,
+        IdentityType,
+        Permission,
+        SecurityManager,
+        SecurityPolicy,
+    )
     from core.security.context import authenticated_transport
     from core.services.dispatch import ServiceDispatcher
     security = SecurityManager()
@@ -257,8 +270,8 @@ def test_empty_injected_device_registry_is_preserved():
 
 
 def test_invalid_authoritative_resource_is_not_deleted():
-    from core.resources.registry import ResourceRegistry
     from core.organization.ingestion import ResourceIngestor
+    from core.resources.registry import ResourceRegistry
     registry = ResourceRegistry()
     registry.register(Resource("r", "good", "device"))
     adapter = SimpleNamespace(list_resources=lambda: [{"resource_id": "r", "name": "bad"}])
