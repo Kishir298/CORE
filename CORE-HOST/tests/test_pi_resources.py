@@ -9,6 +9,7 @@ from core import pi_resources as pr
 from core.web.services import Services
 
 MODEL='qwen2.5:1.5b';DIGEST='a'*64
+linux_only=pytest.mark.skipif(sys.platform!='linux',reason='Pi resource checks require Linux /proc and fcntl')
 
 
 def policy(tmp_path,available=6*pr.GIB,cpu=10,receipt=True):
@@ -54,6 +55,7 @@ def test_resident_model_is_not_counted_as_a_second_full_allocation(tmp_path):
         result=p.evaluate(MODEL);assert result['state']=='allowed' and result['estimated_additional_bytes']==256*1024**2
 
 
+@linux_only
 def test_memavailable_and_cgroup_limits_never_add_swap():
     contents={'/proc/meminfo':'MemTotal: 8388608 kB\nMemAvailable: 6291456 kB\nMemFree: 1 kB\nSwapFree: 99999999 kB\n',
               '/sys/fs/cgroup/memory.max':str(4*pr.GIB),'/sys/fs/cgroup/memory.current':str(3*pr.GIB)}
@@ -105,6 +107,7 @@ def test_unload_previous_model_before_switching(tmp_path):
     assert requests[1]==('/api/generate',{'model':'previous','keep_alive':0})
 
 
+@linux_only
 def test_shared_lock_rejects_untrusted_owner_and_missing_path(tmp_path):
     import threading
     file=tmp_path/'lock';file.write_text('')
@@ -112,6 +115,7 @@ def test_shared_lock_rejects_untrusted_owner_and_missing_path(tmp_path):
     with pytest.raises(FileNotFoundError):pr.acquire_shared_lock(tmp_path/'missing',threading.Event(),time.monotonic()+1)
 
 
+@linux_only
 def test_shared_lock_waits_and_releases_across_descriptors(tmp_path):
     import fcntl
     import stat

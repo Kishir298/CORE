@@ -14,9 +14,21 @@ def app() -> CoreApplication:
     application.stop()
 
 
-def test_application_loads_configuration_on_start(app):
-    assert app.configuration.load_count() == 1
-    assert app.configuration.current() is not None
+def test_application_loads_configuration_on_start(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "core.yaml").write_text(
+        "core:\n  name: C.O.R.E.\n  version: 0.5.0\n"
+    )
+
+    application = CoreApplication()
+    application.start()
+
+    try:
+        assert application.configuration.load_count() == 1
+        assert application.configuration.current() is not None
+    finally:
+        application.stop()
 
 
 def test_application_configuration_applies_logging_level(app, tmp_path):
@@ -157,7 +169,13 @@ def test_application_health_degrades_when_communication_stops(app):
     assert communication_result.status == HealthStatus.UNHEALTHY
 
 
-def test_application_restart_reinitializes_without_error():
+def test_application_restart_reinitializes_without_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "core.yaml").write_text(
+        "core:\n  name: C.O.R.E.\n  version: 0.5.0\n"
+    )
+
     application = CoreApplication()
     application.start()
     application.restart()

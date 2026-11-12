@@ -60,6 +60,17 @@ Desktop.ini
 var/
 *.tmp
 
+# Local SQLite databases / journals (never commit runtime data)
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
 # TLS material (never commit certificates / private keys)
 *.crt
 *.cer

@@ -97,7 +97,6 @@ class ChatStream:
                 if event.get("error"):
                     raise RuntimeError(str(event["error"]))
                 if not self.started:
-                    self.remaining()
                     message = event.get("message", {})
                     if message.get("content") or message.get("thinking") or event.get("done"):
                         self.started = True
@@ -129,6 +128,15 @@ class ChatStream:
         if sock:
             try: sock.shutdown(socket.SHUT_RDWR)
             except OSError: pass
+            # Windows does not wake a recv blocked in another thread on
+            # shutdown(); detach the handle and close it through Winsock.
+            if os.name == "nt" and sock.fileno() != -1:
+                try:
+                    import ctypes
+                    handle = sock.detach()
+                    ctypes.windll.ws2_32.closesocket(ctypes.c_size_t(handle))
+                except (OSError, AttributeError):
+                    pass
 
     def __exit__(self, *args):
         self._close_connection()
