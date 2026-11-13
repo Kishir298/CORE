@@ -1,5 +1,4 @@
 """Desktop control-channel contracts: devices, renewal, tickets and idempotency."""
-import queue
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -130,8 +129,10 @@ def test_ticket_store_expires_and_prunes(monkeypatch):
 
 def test_websocket_channel_delivers_only_ticketed_events(gateway):
     import json
-    from core.web.ws import WebSocketServer
+
     from websockets.sync.client import connect
+
+    from core.web.ws import WebSocketServer
 
     server = WebSocketServer(gateway.events, gateway.tickets, port=0)
     assert server.start()

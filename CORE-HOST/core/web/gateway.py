@@ -21,7 +21,8 @@ from .library import Library
 from .messages import Messages
 from .services import CATALOG, Services
 from .storage import RecordConflict, RescsStorage
-from .ws import WebSocketServer, available as ws_available
+from .ws import WebSocketServer
+from .ws import available as ws_available
 
 MAX_BODY = 256 * 1024
 
