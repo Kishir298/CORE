@@ -1,4 +1,5 @@
 import pytest
+
 from client.entrypoint import main
 
 

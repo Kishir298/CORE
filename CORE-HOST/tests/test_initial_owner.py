@@ -1,9 +1,12 @@
 import json
 import secrets
+
 import pytest
-from core.web.accounts import Accounts
+
 from core.entrypoint import main
-from tests.test_linux_desktop_contract import server as server, RemoteError
+from core.web.accounts import Accounts
+from tests.test_linux_desktop_contract import RemoteError
+from tests.test_linux_desktop_contract import server as server
 
 EMAIL='rishik.patil78@gmail.com'
 TEMP='Password'+'@123'

@@ -1,14 +1,14 @@
 """Native desktop workspace. All network and subprocess work runs off the UI thread."""
 import base64
 import json
-from pathlib import Path
-import shutil
 import queue
+import shutil
 import threading
 import time
+from pathlib import Path
 from urllib.parse import urlencode
 
-from .layout import FlowRow, ScrollPage, initial_geometry, configure_dpi
+from .layout import FlowRow, ScrollPage, configure_dpi, initial_geometry
 from .local import LocalRunner
 from .remote import Remote, RemoteError, sync_records
 from .store import LocalStore
@@ -17,7 +17,7 @@ from .store import LocalStore
 class Desktop:
     def __init__(self, root, directory, server):
         import tkinter as tk
-        from tkinter import ttk, messagebox
+        from tkinter import messagebox, ttk
         self.tk, self.ttk, self.messagebox, self.root = tk, ttk, messagebox, root
         self.store = LocalStore(directory)
         self.profile, self.remote, self.online, self.busy = None, None, False, False
@@ -448,7 +448,7 @@ class Desktop:
         self.work(lambda:system_report(self.store.directory),done)
 
     def download_model(self):
-        from ..model_support import system_report,download_recommended
+        from ..model_support import download_recommended, system_report
         if self.busy:return
         if not self.messagebox.askyesno("Download model","This downloads the hardware-selected model using Ollama and can use several GB of internet data. Continue?"):return
         def work():return download_recommended(system_report(self.store.directory),lambda text:self.messages.put(("model-progress",text)))

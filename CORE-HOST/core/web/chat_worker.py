@@ -2,8 +2,9 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import tempfile
+from pathlib import Path
+
 from core.inference import ChatStream
 
 

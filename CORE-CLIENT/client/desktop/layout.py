@@ -1,7 +1,7 @@
 """DPI-aware geometry, wrapping controls and keyboard-accessible scrolling."""
 import os
 import tkinter as tk
-from tkinter import ttk,font
+from tkinter import font, ttk
 
 
 def configure_dpi():

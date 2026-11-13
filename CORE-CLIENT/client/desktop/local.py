@@ -1,10 +1,11 @@
 """Local Ollama and explicit standalone service execution; no CORE imports."""
 import codecs
 import os
-from pathlib import Path
 import signal
 import subprocess
 import threading
+from pathlib import Path
+
 from ..inference import ChatStream
 
 

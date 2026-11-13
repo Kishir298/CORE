@@ -31,6 +31,7 @@ def main(argv=None):
     data = (args.data or default_data()).expanduser().resolve()
     if args.command in ('pi-check','pi-benchmark') or (args.command in ('model-check','model-download') and os.environ.get('CORE_SAFE_CHAT')=='1'):
         import json
+
         from core.pi_resources import PiPolicy, benchmark
         data.mkdir(parents=True,exist_ok=True)
         if args.command=='model-download':parser.error('Pi models are never automatically downloaded. Pull an explicit allowed Q4 tag with Ollama, then run pi-benchmark.')
@@ -48,6 +49,7 @@ def main(argv=None):
         return 0
     if args.command == "init-owner":
         import json
+
         from core.web.accounts import Accounts
         if args.owner_seed is None: parser.error("init-owner requires --owner-seed.")
         accounts = Accounts(data)
@@ -58,7 +60,8 @@ def main(argv=None):
         return 0
     if args.command in ("model-check", "model-download"):
         import json
-        from core.model_support import system_report, download_recommended
+
+        from core.model_support import download_recommended, system_report
         report = system_report(data.parent)
         print(json.dumps(report, indent=2))
         if args.command == "model-download":

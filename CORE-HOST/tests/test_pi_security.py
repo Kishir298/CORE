@@ -4,8 +4,9 @@ import time
 from unittest.mock import patch
 
 import pytest
+
 from core.web.gateway import Gateway
-from core.web.services import Services, Job
+from core.web.services import Job, Services
 
 PW='pi-security-passphrase-123'
 

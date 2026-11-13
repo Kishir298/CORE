@@ -12,7 +12,6 @@ from core.organization import OrganizationEngine
 
 from .models import Resource
 
-
 _UNSET = object()
 
 def _synchronized(method):

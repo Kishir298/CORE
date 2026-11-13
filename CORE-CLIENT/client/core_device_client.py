@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import getpass
-from functools import wraps
 import json
 import os
 import platform
@@ -41,6 +40,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 
 PROTOCOL_VERSION = "0.4.0"

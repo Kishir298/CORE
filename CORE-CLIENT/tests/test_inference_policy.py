@@ -1,8 +1,10 @@
 import json
 import threading
 import time
-from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
 import pytest
+
 from client import inference
 
 
@@ -30,7 +32,7 @@ def backend(monkeypatch):
                         [{'message':{'content':'actual output'}},{'done':True}])
                 for event in events:
                     self.wfile.write(json.dumps(event).encode()+b'\n');self.wfile.flush()
-            except (BrokenPipeError,ConnectionResetError):pass
+            except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):pass
     server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     original=inference.http.client.HTTPConnection
@@ -100,6 +102,27 @@ def test_cancel_interrupts_blocked_stream(backend):
         finally:stream.__exit__();finished.set()
     thread=threading.Thread(target=read);thread.start();time.sleep(.02)
     stream.close();assert finished.wait(1);thread.join(1)
+
+
+def test_repeated_cancel_interrupts_every_stream(backend):
+    requests,state=backend;state['delay']=2
+    for attempt in range(10):
+        stream=inference.ChatStream('model',[{'role':'user','content':'hi'}])
+        stream.__enter__()
+        finished=threading.Event();errors=[]
+        def read(active=stream,done=finished):
+            try:list(active)
+            except (OSError,ValueError):pass
+            except Exception as exc:errors.append(exc)
+            finally:
+                active.__exit__();done.set()
+        thread=threading.Thread(target=read);thread.start();time.sleep(.01)
+        for _ in range(5):stream.close()
+        assert finished.wait(1),f"attempt {attempt} did not stop"
+        thread.join(1)
+        assert not thread.is_alive(),f"attempt {attempt} leaked a reader thread"
+        assert not errors,f"attempt {attempt} raised {errors!r}"
+    assert len(requests)==20
 
 
 @pytest.mark.parametrize('info',[{}, {'x.context_length':True},{'x.context_length':-1}])

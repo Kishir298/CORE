@@ -1,9 +1,9 @@
 """Portal behavior tested without OS TCP listeners."""
 import io
 import json
-from email.message import Message
 import sys
 import time
+from email.message import Message
 from unittest.mock import patch
 
 import pytest

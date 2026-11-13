@@ -11,21 +11,21 @@ import pytest
 
 import client.core_device_client as wire
 from client.core_device_client import CoreDeviceClient, DeviceClientError
-from client.portal.server import ClientPortal, INDEX_HTML
+from client.portal.server import INDEX_HTML, MAX_BODY_BYTES, ClientPortal
 
 
 def client():
     return CoreDeviceClient("127.0.0.1", 5000, "alice", use_tls=False)
 
 
-def invoke(portal, method, path, body=None, headers=None):
+def invoke(portal, method, path, body=None, headers=None, raw_body=None):
     cls = portal._make_handler()
     handler = cls.__new__(cls)
     handler.path, handler.command = path, method
     handler.request_version = "HTTP/1.1"
     handler.requestline = method + " " + path + " HTTP/1.1"
     handler.headers = Headers()
-    raw = json.dumps(body or {}).encode()
+    raw = raw_body if raw_body is not None else json.dumps(body if body is not None else {}).encode()
     values = {"Host": "127.0.0.1:8766", "Content-Type": "application/json",
               "X-Core-Request": "true", "Content-Length": str(len(raw))}
     values.update(headers or {})
@@ -34,6 +34,20 @@ def invoke(portal, method, path, body=None, headers=None):
     handler.rfile, handler.wfile = io.BytesIO(raw), io.BytesIO()
     getattr(handler, "do_" + method)()
     return handler.wfile.getvalue()
+
+
+def status_of(raw):
+    return int(raw.split(b"\r\n", 1)[0].split()[1])
+
+
+def origin_handler(origin, *, host="127.0.0.1:8766", content_type="application/json",
+                   csrf="true"):
+    headers = {"Host": host, "Content-Type": content_type}
+    if origin is not None:
+        headers["Origin"] = origin
+    if csrf is not None:
+        headers["X-Core-Request"] = csrf
+    return SimpleNamespace(headers=headers)
 
 
 def test_client_portal_refuses_remote_bind():
@@ -134,3 +148,94 @@ def test_ai_offload_reports_service_failure():
     portal = ClientPortal(lambda: c)
     with patch.object(portal, "_ai_state", return_value={"local": {"state": "UNAVAILABLE"}, "offload": {"available": True}}), patch.object(c, "service_request", return_value={"payload": {"success": False, "error": "permission denied"}}):
         with pytest.raises(ConnectionError, match="permission denied"): portal.ai_request("hello")
+
+
+@pytest.mark.parametrize("authority", [
+    "127.0.0.1:8766",
+    "localhost:8766",
+    "[::1]:8766",
+])
+def test_portal_accepts_loopback_host_authorities(authority):
+    portal = ClientPortal(lambda: None)
+    assert status_of(invoke(portal, "GET", "/", headers={"Host": authority})) == 200
+
+
+@pytest.mark.parametrize("authority", [
+    "evil.example:8766",
+    "user:pass@127.0.0.1:8766",
+    "127.0.0.1:8766/extra",
+    "127.0.0.1:8766?query=1",
+    "127.0.0.1:8766#fragment",
+    "127.0.0.1:9999",
+    "0.0.0.0:8766",
+])
+def test_portal_rejects_foreign_or_malformed_host(authority):
+    portal = ClientPortal(lambda: None)
+    assert status_of(invoke(portal, "GET", "/", headers={"Host": authority})) == 403
+
+
+@pytest.mark.parametrize("origin", [
+    "https://127.0.0.1:8766",
+    "http://evil.example:8766",
+    "http://127.0.0.1:9999",
+    "http://user:pass@127.0.0.1:8766",
+    "http://127.0.0.1:8766/extra",
+    "http://127.0.0.1:8766?query=1",
+    "http://127.0.0.1:8766#fragment",
+])
+def test_mutation_rejects_foreign_or_malformed_origin(origin):
+    portal = ClientPortal(lambda: None)
+    with pytest.raises(ValueError):
+        portal._check_portal_origin(origin_handler(origin))
+
+
+@pytest.mark.parametrize("origin", [None, "http://127.0.0.1:8766"])
+def test_mutation_allows_same_origin_or_header_only_requests(origin):
+    portal = ClientPortal(lambda: None)
+    portal._check_portal_origin(origin_handler(origin))
+
+
+def test_mutation_requires_csrf_header():
+    portal = ClientPortal(lambda: None)
+    with pytest.raises(ValueError, match="X-Core-Request"):
+        portal._check_portal_origin(origin_handler(None, csrf=None))
+
+
+@pytest.mark.parametrize("content_type", ["text/plain", "application/xml", ""])
+def test_mutation_rejects_non_json_content_type(content_type):
+    portal = ClientPortal(lambda: None)
+    with pytest.raises(ValueError, match="Content-Type"):
+        portal._check_portal_origin(origin_handler(None, content_type=content_type))
+
+
+@pytest.mark.parametrize("content_type", ["application/json; charset=utf-8",
+                                          "Application/JSON"])
+def test_mutation_accepts_json_content_type_with_parameters(content_type):
+    portal = ClientPortal(lambda: None)
+    portal._check_portal_origin(origin_handler(None, content_type=content_type))
+
+
+@pytest.mark.parametrize("raw_body", [b"[]", b'"text"', b"null", b"{", b""])
+def test_mutation_rejects_non_object_or_malformed_json(raw_body):
+    portal = ClientPortal(lambda: None)
+    result = invoke(portal, "POST", "/api/location", raw_body=raw_body)
+    assert status_of(result) == 400
+
+
+@pytest.mark.parametrize("length", ["0", "-1", "not-a-number",
+                                    str(MAX_BODY_BYTES + 1)])
+def test_mutation_rejects_invalid_body_length(length):
+    portal = ClientPortal(lambda: None)
+    result = invoke(portal, "POST", "/api/location", raw_body=b"{}",
+                    headers={"Content-Length": length})
+    assert status_of(result) == 400
+
+
+def test_mutation_accepts_valid_json_with_charset_parameter():
+    portal = ClientPortal(lambda: None)
+    result = invoke(
+        portal, "POST", "/api/location",
+        body={"location": {"latitude": 25.2, "longitude": 55.3}},
+        headers={"Content-Type": "application/json; charset=utf-8"},
+    )
+    assert status_of(result) == 200

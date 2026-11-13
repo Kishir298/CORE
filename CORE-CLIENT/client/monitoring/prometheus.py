@@ -1,7 +1,7 @@
 """Prometheus metrics exporter for CORE-CLIENT."""
 
-from prometheus_client import Counter, Histogram, Gauge, generate_latest
 from fastapi import Response
+from prometheus_client import Counter, Gauge, Histogram, generate_latest
 
 # Connection metrics
 core_client_connections_active = Gauge(
