@@ -18,8 +18,17 @@ def settings_path():
 
 
 def desktop_main(url):
-    from .desktop.app import launch
-    return launch(settings_path().parent / "offline", url)
+    """Prefer the canonical RISARMS-UI app when it is installed.
+
+    CORE-CLIENT keeps its legacy desktop app as a fallback so existing
+    installations keep working; new installations should use RISARMS-UI.
+    """
+    try:
+        from risarms_ui.entrypoint import main as unified_main
+    except ImportError:
+        from .desktop.app import launch
+        return launch(settings_path().parent / "offline", url)
+    return unified_main(["--url", url])
 
 
 def main(argv=None):

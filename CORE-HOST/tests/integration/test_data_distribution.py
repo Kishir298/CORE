@@ -188,7 +188,11 @@ def _start_stack(event_bus=None):
     endpoint = fx.url  # capture eagerly: config holds a URL string, not a live object
     organizer = DataOrganizer(
         reader_factory=lambda scope, cross=False: HttpDataReader(
-            endpoint=endpoint, owner_scope=scope, allow_cross_owner=cross, timeout=2.0
+            endpoint=endpoint,
+            owner_scope=scope,
+            allow_cross_owner=cross,
+            timeout=2.0,
+            api_key=fx.api_key,
         ),
         security_manager=_make_security(),
         event_bus=event_bus,

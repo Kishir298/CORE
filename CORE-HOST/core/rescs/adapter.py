@@ -15,6 +15,19 @@ from urllib.parse import quote, urlencode
 from core.resources.models import Resource
 from core.runtime.history import RuntimeRecord
 
+# C.O.R.E.-managed R.E.S.C.S. record namespaces.  C.O.R.E. persists its
+# operational state as ordinary R.E.S.C.S. records under reserved
+# ``core.*`` namespaces; it never relies on the legacy /resources,
+# /runtimes, /devices or /clear routes.
+RESCS_RESOURCE_NAMESPACE = "core.resources"
+RESCS_RUNTIME_NAMESPACE = "core.runtimes"
+RESCS_DEVICE_NAMESPACE = "core.devices"
+# R.E.S.C.S. accepts list limits of 1..500.
+RESCS_PAGE_SIZE = 500
+# Defence-in-depth bound for collection reads; exceeding it is an error
+# rather than a silent truncation.
+RESCS_MAX_COLLECTION_RECORDS = 10_000
+
 
 class RescsAdapter(ABC):
     """
@@ -391,18 +404,32 @@ class HttpRescsAdapter(RescsAdapter):
     in-memory cache so local operation is undisturbed while health
     correctly reports ``healthy=False`` until the remote is reachable.
 
+    Persistence mapping (R.E.S.C.S. v1 record API):
+
+    ==================  =============================================
+    C.O.R.E. object     R.E.S.C.S. record
+    ==================  =============================================
+    Resource            namespace ``core.resources``, key
+                        ``resource_id``, value ``Resource.to_dict()``
+    RuntimeRecord       namespace ``core.runtimes``, key ``entity_id``,
+                        value ``RuntimeRecord.to_dict()``
+    device identity     namespace ``core.devices``, key ``device_id``,
+                        value the sanitized device snapshot
+    ==================  =============================================
+
+    Records are upserted with ``PUT /api/v1/records`` (namespace/key) and
+    addressed by their server-assigned ``id`` for reads/deletes.  The
+    record ``owner`` is deliberately left at the R.E.S.C.S. default
+    (``system`` or the configured key owner) because C.O.R.E.'s logical
+    owner lives inside ``value`` and a locked deployment must be allowed
+    to reject an arbitrary storage owner.
+
     Contract (JSON over HTTP) - RESCS v1 API:
-      POST   /api/v1/records          {record dict}
-      GET    /api/v1/records          -> {records:[...], total:int} or [...]
-      GET    /api/v1/records/{id}     -> {record dict} or 404
-      DELETE /api/v1/records/{id}
-      POST   /api/v1/files            {file dict} (multipart upload at /api/v1/uploads)
-      GET    /api/v1/files            -> {files:[...], total:int} or [...]
-      GET    /api/v1/files/{id}       -> {file metadata} or 404
-      GET    /api/v1/files/{id}/content -> binary content
-      DELETE /api/v1/files/{id}
-      GET    /api/v1/health           -> {healthy:bool, records:int, files:int}
-      POST   /api/v1/uploads          {file upload}
+      PUT    /api/v1/records          {namespace,key,value,metadata}
+      GET    /api/v1/records          -> {items:[...], total:int, limit, offset}
+      GET    /api/v1/records/{id}     -> record or 404
+      DELETE /api/v1/records/{id}     -> 204 or 404
+      GET    /health                  -> {status:"ok"|..., checks:{...}}
     """
 
     def __init__(
@@ -432,17 +459,25 @@ class HttpRescsAdapter(RescsAdapter):
         method: str,
         path: str,
         body: dict[str, Any] | None = None,
+        *,
+        allow_not_found: bool | None = None,
     ) -> Any | None:
         import urllib.error
         import urllib.request
 
+        method = method.upper()
+        # A 404 means "absent" only for reads by default.  Writes never
+        # turn a missing route/object into success; callers that can
+        # tolerate a concurrent delete opt in explicitly.
+        if allow_not_found is None:
+            allow_not_found = method == "GET"
         url = self._url(path)
         data = None
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if self._api_key:
             headers["X-API-Key"] = self._api_key
         if body is not None:
-            if method.upper() == "GET":
+            if method == "GET":
                 query = urlencode({key: value for key, value in body.items() if value is not None})
                 if query:
                     url += ("&" if "?" in url else "?") + query
@@ -463,13 +498,135 @@ class HttpRescsAdapter(RescsAdapter):
                 except Exception:
                     return text
         except urllib.error.HTTPError as exc:
-            # 404 handling: only GET 404 = "not found" (return None)
-            # POST/DELETE/PUT 404 = failure (raise)
-            if exc.code == 404 and method == "GET":
+            if exc.code == 404 and allow_not_found:
                 return None
             raise OSError(f"R.E.S.C.S. HTTP {method} {path} -> {exc.code} {exc.reason}") from exc
         except Exception as exc:
             raise OSError(f"R.E.S.C.S. HTTP {method} {path} failed: {exc}") from exc
+
+    # -- remote collection / mapping helpers -------------------------------
+
+    def _mark_remote_success(self, *, durable: bool = False) -> None:
+        self._last_error = None
+        self._healthy = True
+        if durable:
+            self._last_durable_success = True
+
+    def _mark_remote_failure(self, exc: Exception) -> None:
+        self._last_error = str(exc)
+        self._healthy = False
+        # A failed write (or any remote failure) must not inherit a
+        # previous durable-success claim.
+        if isinstance(exc, OSError):
+            self._last_durable_success = False
+
+    @staticmethod
+    def _parse_collection(result: Any) -> tuple[list[dict[str, Any]], int]:
+        if isinstance(result, list):
+            items = [item for item in result if isinstance(item, dict)]
+            return items, len(items)
+        if not isinstance(result, dict):
+            return [], 0
+        items: list[dict[str, Any]] | None = None
+        for key in ("items", "records", "data"):
+            if isinstance(result.get(key), list):
+                items = [item for item in result[key] if isinstance(item, dict)]
+                break
+        if items is None and any(
+            key in result for key in ("id", "resource_id", "entity_id")
+        ):
+            items = [result]
+        total = result.get("total")
+        if type(total) is not int or total < 0:
+            total = len(items) if items is not None else 0
+        return items or [], total
+
+    def _collection(
+        self, path: str, params: dict[str, Any] | None = None
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Read every page of a R.E.S.C.S. collection, bounded.
+
+        Uses the documented 1..500 page limit and stops when the remote
+        ``total`` is reached (or a short/empty page is returned by an
+        older server).  More than :data:`RESCS_MAX_COLLECTION_RECORDS`
+        is a hard failure so a caller never silently receives a partial
+        collection.
+        """
+        records: list[dict[str, Any]] = []
+        total: int | None = None
+        offset = 0
+        while True:
+            page_params = dict(params or {})
+            page_params["limit"] = RESCS_PAGE_SIZE
+            page_params["offset"] = offset
+            result = self._request("GET", path, page_params)
+            if result is None:
+                raise OSError("Missing R.E.S.C.S. collection response.")
+            items, page_total = self._parse_collection(result)
+            if total is None:
+                total = page_total
+            records.extend(items)
+            if (
+                len(records) > RESCS_MAX_COLLECTION_RECORDS
+                or (total is not None and total > RESCS_MAX_COLLECTION_RECORDS)
+            ):
+                raise OSError(
+                    "R.E.S.C.S. collection exceeds "
+                    f"{RESCS_MAX_COLLECTION_RECORDS} records."
+                )
+            if not items:
+                break
+            if total is not None and len(records) >= total:
+                break
+            if total is None and len(items) < RESCS_PAGE_SIZE:
+                break
+            offset += len(items)
+        return records, total if total is not None else len(records)
+
+    def _find_record(self, namespace: str, key: str) -> dict[str, Any] | None:
+        """Find one record by its C.O.R.E. ``(namespace, key)`` identity."""
+        records, _ = self._collection(
+            "/api/v1/records", {"namespace": namespace, "key_prefix": key}
+        )
+        for record in records:
+            if record.get("namespace") == namespace and record.get("key") == key:
+                return record
+        return None
+
+    def _write_record(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Upsert one record and require a server-confirmed write."""
+        result = self._request("PUT", "/api/v1/records", payload)
+        if not isinstance(result, dict) or not result.get("id"):
+            raise OSError("Invalid R.E.S.C.S. record write response.")
+        return result
+
+    @staticmethod
+    def _resource_payload(resource: Resource) -> dict[str, Any]:
+        return {
+            "namespace": RESCS_RESOURCE_NAMESPACE,
+            "key": resource.resource_id,
+            "value": resource.to_dict(),
+            "metadata": {},
+        }
+
+    @staticmethod
+    def _runtime_payload(record: RuntimeRecord) -> dict[str, Any]:
+        return {
+            "namespace": RESCS_RUNTIME_NAMESPACE,
+            "key": record.entity_id,
+            "value": record.to_dict(),
+            "metadata": {},
+        }
+
+    @staticmethod
+    def _device_payload(device: dict[str, Any]) -> dict[str, Any]:
+        snapshot = _validate_device_dict(device)
+        return {
+            "namespace": RESCS_DEVICE_NAMESPACE,
+            "key": snapshot["device_id"],
+            "value": snapshot,
+            "metadata": {},
+        }
 
     def _resource_from_dict(self, data: dict[str, Any]) -> Resource:
         from datetime import datetime
@@ -523,41 +680,110 @@ class HttpRescsAdapter(RescsAdapter):
                 pass
         return record
 
+    def _resource_from_record(self, record: dict[str, Any]) -> Resource:
+        """Project a R.E.S.C.S. record into a C.O.R.E. ``Resource``.
+
+        The canonical representation is ``value = Resource.to_dict()``.
+        Flat legacy records are tolerated so old local fixtures and any
+        hand-seeded data remain readable.
+        """
+        value = record.get("value")
+        if not isinstance(value, dict) or "resource_id" not in value:
+            value = {
+                key: record.get(key)
+                for key in (
+                    "resource_id",
+                    "name",
+                    "resource_type",
+                    "status",
+                    "owner",
+                    "source",
+                    "capabilities",
+                    "metadata",
+                    "connection_info",
+                    "last_seen",
+                    "registered_at",
+                )
+                if key in record
+            }
+        data = dict(value)
+        data.setdefault("resource_id", record.get("key") or record.get("id") or "")
+        data.setdefault("name", data["resource_id"])
+        data.setdefault("resource_type", "unknown")
+        if "owner" not in data:
+            data["owner"] = record.get("owner")
+        return self._resource_from_dict(data)
+
+    def _runtime_from_record(self, record: dict[str, Any]) -> RuntimeRecord:
+        """Project a R.E.S.C.S. record into a ``RuntimeRecord``."""
+        value = record.get("value")
+        if not isinstance(value, dict) or "entity_id" not in value:
+            value = {
+                key: record.get(key)
+                for key in (
+                    "entity_id",
+                    "entity_type",
+                    "start_time",
+                    "end_time",
+                    "duration",
+                    "status",
+                    "metadata",
+                )
+                if key in record
+            }
+        data = dict(value)
+        data.setdefault("entity_id", record.get("key") or "")
+        if not data.get("entity_type"):
+            metadata = record.get("metadata")
+            if isinstance(metadata, dict) and metadata.get("entity_type"):
+                data["entity_type"] = metadata["entity_type"]
+            else:
+                data["entity_type"] = "unknown"
+        return self._record_from_dict(data)
+
+    def _device_from_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Project a R.E.S.C.S. record into a device identity dict."""
+        value = record.get("value")
+        data = dict(value) if isinstance(value, dict) else {}
+        if "device_id" not in data:
+            data["device_id"] = record.get("key")
+        return _validate_device_dict(data)
+
     def persist_resource(self, resource: Resource) -> None:
         with self._lock:
             # Always keep fallback in sync
             self._fallback.persist_resource(resource)
             try:
-                self._request("POST", "/api/v1/records", resource.to_dict())
-                self._last_error = None
-                self._healthy = True
-                self._last_durable_success = True
+                self._write_record(self._resource_payload(resource))
+                self._mark_remote_success(durable=True)
             except Exception as exc:
-                self._last_error = str(exc)
-                self._healthy = False
-                self._last_durable_success = False
+                self._mark_remote_failure(exc)
                 if not self._fallback_enabled:
                     raise
 
     def fetch_resource(self, resource_id: str) -> Resource | None:
         with self._lock:
             try:
-                result = self._request("GET", f"/api/v1/records/{quote(resource_id, safe='')}")
-                if result is None:
-                    return self._fallback.fetch_resource(resource_id) if self._fallback_enabled else None
-                # Server may wrap in {"record": {...}} or return dict directly
-                if isinstance(result, dict) and "record" in result and isinstance(result["record"], dict):
-                    result = result["record"]
-                if isinstance(result, dict) and "resource_id" in result:
-                    self._last_error = None
-                    self._healthy = True
-                    self._last_durable_success = True
-                    return self._resource_from_dict(result)
-                return self._fallback.fetch_resource(resource_id) if self._fallback_enabled else None
+                record = self._find_record(
+                    RESCS_RESOURCE_NAMESPACE, resource_id
+                )
+                if record is None:
+                    self._mark_remote_success()
+                    return (
+                        self._fallback.fetch_resource(resource_id)
+                        if self._fallback_enabled
+                        else None
+                    )
+                resource = self._resource_from_record(record)
+                if resource.resource_id != resource_id:
+                    raise OSError(
+                        "R.E.S.C.S. record identity does not match the "
+                        "requested resource."
+                    )
+                self._mark_remote_success()
+                return resource
             except Exception as exc:
-                self._last_error = str(exc)
-                self._healthy = False
-                self._last_durable_success = False
+                self._mark_remote_failure(exc)
                 if self._fallback_enabled:
                     return self._fallback.fetch_resource(resource_id)
                 raise
@@ -566,51 +792,45 @@ class HttpRescsAdapter(RescsAdapter):
         with self._lock:
             self._fallback.delete_resource(resource_id)
             try:
-                self._request("DELETE", f"/api/v1/records/{quote(resource_id, safe='')}")
-                self._last_error = None
-                self._healthy = True
-                self._last_durable_success = True
+                record = self._find_record(
+                    RESCS_RESOURCE_NAMESPACE, resource_id
+                )
+                if record is not None:
+                    record_id = record.get("id")
+                    if not isinstance(record_id, str) or not record_id:
+                        raise OSError(
+                            "R.E.S.C.S. record is missing its server id."
+                        )
+                    # The exact record was just observed, so a concurrent
+                    # 404 means the delete already happened (idempotent).
+                    self._request(
+                        "DELETE",
+                        f"/api/v1/records/{quote(record_id, safe='')}",
+                        allow_not_found=True,
+                    )
+                self._mark_remote_success(durable=True)
             except Exception as exc:
-                self._last_error = str(exc)
-                self._healthy = False
-                self._last_durable_success = False
+                self._mark_remote_failure(exc)
                 if not self._fallback_enabled:
                     raise
 
     def list_resources(self) -> list[Resource]:
         with self._lock:
             try:
-                result = self._request("GET", "/api/v1/records")
-                if result is None:
-                    raise OSError("Missing R.E.S.C.S. collection response.")
-                # Normalize: {records:[...], total:int} or {data:[...]} or [...]
-                raw_list = None
-                if isinstance(result, list):
-                    raw_list = result
-                elif isinstance(result, dict):
-                    for key in ("records", "data", "items"):
-                        if key in result and isinstance(result[key], list):
-                            raw_list = result[key]
-                            break
-                    if raw_list is None and "resource_id" in result:
-                        raw_list = [result]
-                if raw_list is not None:
-                    self._last_error = None
-                    self._healthy = True
-                    self._last_durable_success = True
-                    out: list[Resource] = []
-                    for item in raw_list:
-                        try:
-                            if isinstance(item, dict) and "resource_id" in item:
-                                out.append(self._resource_from_dict(item))
-                        except Exception:
-                            continue
-                    return out
-                raise OSError("Invalid R.E.S.C.S. collection response.")
+                records, _ = self._collection(
+                    "/api/v1/records",
+                    {"namespace": RESCS_RESOURCE_NAMESPACE},
+                )
+                out: list[Resource] = []
+                for item in records:
+                    try:
+                        out.append(self._resource_from_record(item))
+                    except Exception:
+                        continue
+                self._mark_remote_success()
+                return out
             except Exception as exc:
-                self._last_error = str(exc)
-                self._healthy = False
-                self._last_durable_success = False
+                self._mark_remote_failure(exc)
                 if not self._fallback_enabled:
                     raise
                 return self._fallback.list_resources()
@@ -619,54 +839,30 @@ class HttpRescsAdapter(RescsAdapter):
         with self._lock:
             self._fallback.persist_runtime(record)
             try:
-                # Runtimes are stored as records with entity_type="runtime"
-                data = record.to_dict()
-                data["entity_type"] = data.get("entity_type", "runtime")
-                self._request("POST", "/api/v1/records", data)
-                self._last_error = None
-                self._healthy = True
-                self._last_durable_success = True
+                self._write_record(self._runtime_payload(record))
+                self._mark_remote_success(durable=True)
             except Exception as exc:
-                self._last_error = str(exc)
-                self._healthy = False
-                self._last_durable_success = False
+                self._mark_remote_failure(exc)
                 if not self._fallback_enabled:
                     raise
 
     def list_runtimes(self) -> list[RuntimeRecord]:
         with self._lock:
             try:
-                # Query for runtime records
-                result = self._request("GET", "/api/v1/records", {"entity_type": "runtime"})
-                if result is None:
-                    raise OSError("Missing R.E.S.C.S. collection response.")
-                raw_list = None
-                if isinstance(result, list):
-                    raw_list = result
-                elif isinstance(result, dict):
-                    for key in ("records", "data", "items"):
-                        if key in result and isinstance(result[key], list):
-                            raw_list = result[key]
-                            break
-                    if raw_list is None and "entity_id" in result:
-                        raw_list = [result]
-                if raw_list is not None:
-                    self._last_error = None
-                    self._healthy = True
-                    self._last_durable_success = True
-                    out: list[RuntimeRecord] = []
-                    for item in raw_list:
-                        try:
-                            if isinstance(item, dict) and "entity_id" in item:
-                                out.append(self._record_from_dict(item))
-                        except Exception:
-                            continue
-                    return out
-                raise OSError("Invalid R.E.S.C.S. collection response.")
+                records, _ = self._collection(
+                    "/api/v1/records",
+                    {"namespace": RESCS_RUNTIME_NAMESPACE},
+                )
+                out: list[RuntimeRecord] = []
+                for item in records:
+                    try:
+                        out.append(self._runtime_from_record(item))
+                    except Exception:
+                        continue
+                self._mark_remote_success()
+                return out
             except Exception as exc:
-                self._last_error = str(exc)
-                self._healthy = False
-                self._last_durable_success = False
+                self._mark_remote_failure(exc)
                 if not self._fallback_enabled:
                     raise
                 return self._fallback.list_runtimes()
@@ -674,29 +870,29 @@ class HttpRescsAdapter(RescsAdapter):
     def health(self) -> dict[str, Any]:
         with self._lock:
             try:
-                result = self._request("GET", "/api/v1/health")
-                if isinstance(result, dict):
-                    # Remote health is authoritative when reachable
-                    healthy = bool(result.get("healthy", True))
-                    self._healthy = healthy
-                    self._last_error = None
-                    # Normalize keys
-                    result.setdefault("adapter", "http")
-                    result.setdefault("endpoint", self._endpoint)
-                    result.setdefault("last_durable_success", self._last_durable_success)
-                    return result
-                # If no JSON, still healthy if request succeeded
-                self._healthy = True
-                self._last_error = None
-                return {
-                    "adapter": "http",
-                    "endpoint": self._endpoint,
-                    "healthy": True,
-                    "records": len(self._fallback.list_resources()),
-                    "runtimes": len(self._fallback.list_runtimes()),
-                    "devices": len(self._fallback.list_devices()),
-                    "last_durable_success": self._last_durable_success,
-                }
+                result = self._request("GET", "/health")
+                if not isinstance(result, dict):
+                    raise OSError("Invalid R.E.S.C.S. health response.")
+                status = result.get("status")
+                if status is not None:
+                    healthy = status == "ok"
+                else:
+                    # Never assume healthy when the remote omitted status.
+                    healthy = result.get("healthy") is True
+                self._healthy = healthy
+                self._last_error = None if healthy else (
+                    f"R.E.S.C.S. status={status!r}"
+                    if status is not None
+                    else "R.E.S.C.S. health response has no status."
+                )
+                result = dict(result)
+                result["healthy"] = healthy
+                result.setdefault("adapter", "http")
+                result.setdefault("endpoint", self._endpoint)
+                result.setdefault(
+                    "last_durable_success", self._last_durable_success
+                )
+                return result
             except Exception as exc:
                 self._last_error = str(exc)
                 self._healthy = False
@@ -716,42 +912,34 @@ class HttpRescsAdapter(RescsAdapter):
         with self._lock:
             self._fallback.persist_device(snapshot)
             try:
-                # Devices stored as records with entity_type="device"
-                data = dict(snapshot)
-                data["entity_type"] = "device"
-                data["entity_id"] = data.pop("device_id")
-                self._request("POST", "/api/v1/records", data)
-                self._last_error = None
-                self._healthy = True
-                self._last_durable_success = True
+                self._write_record(self._device_payload(snapshot))
+                self._mark_remote_success(durable=True)
             except Exception as exc:
-                self._last_error = str(exc)
-                self._healthy = False
-                self._last_durable_success = False
+                self._mark_remote_failure(exc)
                 if not self._fallback_enabled:
                     raise
 
     def fetch_device(self, device_id: str) -> dict[str, Any] | None:
         with self._lock:
             try:
-                result = self._request("GET", f"/api/v1/records/{quote(device_id, safe='')}")
-                if result is None:
-                    return self._fallback.fetch_device(device_id) if self._fallback_enabled else None
-                if isinstance(result, dict) and "record" in result and isinstance(result["record"], dict):
-                    result = result["record"]
-                if isinstance(result, dict) and result.get("entity_id") == device_id:
-                    self._last_error = None
-                    self._healthy = True
-                    self._last_durable_success = True
-                    # Convert back to device format
-                    device = dict(result)
-                    device["device_id"] = device.pop("entity_id")
-                    return device
-                return self._fallback.fetch_device(device_id) if self._fallback_enabled else None
+                record = self._find_record(RESCS_DEVICE_NAMESPACE, device_id)
+                if record is None:
+                    self._mark_remote_success()
+                    return (
+                        self._fallback.fetch_device(device_id)
+                        if self._fallback_enabled
+                        else None
+                    )
+                device = self._device_from_record(record)
+                if device["device_id"] != device_id:
+                    raise OSError(
+                        "R.E.S.C.S. record identity does not match the "
+                        "requested device."
+                    )
+                self._mark_remote_success()
+                return device
             except Exception as exc:
-                self._last_error = str(exc)
-                self._healthy = False
-                self._last_durable_success = False
+                self._mark_remote_failure(exc)
                 if self._fallback_enabled:
                     return self._fallback.fetch_device(device_id)
                 raise
@@ -760,52 +948,40 @@ class HttpRescsAdapter(RescsAdapter):
         with self._lock:
             self._fallback.delete_device(device_id)
             try:
-                self._request("DELETE", f"/api/v1/records/{quote(device_id, safe='')}")
-                self._last_error = None
-                self._healthy = True
-                self._last_durable_success = True
+                record = self._find_record(RESCS_DEVICE_NAMESPACE, device_id)
+                if record is not None:
+                    record_id = record.get("id")
+                    if not isinstance(record_id, str) or not record_id:
+                        raise OSError(
+                            "R.E.S.C.S. record is missing its server id."
+                        )
+                    self._request(
+                        "DELETE",
+                        f"/api/v1/records/{quote(record_id, safe='')}",
+                        allow_not_found=True,
+                    )
+                self._mark_remote_success(durable=True)
             except Exception as exc:
-                self._last_error = str(exc)
-                self._healthy = False
-                self._last_durable_success = False
+                self._mark_remote_failure(exc)
                 if not self._fallback_enabled:
                     raise
 
     def list_devices(self) -> list[dict[str, Any]]:
         with self._lock:
             try:
-                result = self._request("GET", "/api/v1/records", {"entity_type": "device"})
-                if result is None:
-                    raise OSError("Missing R.E.S.C.S. collection response.")
-                raw_list = None
-                if isinstance(result, list):
-                    raw_list = result
-                elif isinstance(result, dict):
-                    for key in ("records", "data", "items"):
-                        if key in result and isinstance(result[key], list):
-                            raw_list = result[key]
-                            break
-                    if raw_list is None and result.get("entity_id"):
-                        raw_list = [result]
-                if raw_list is not None:
-                    self._last_error = None
-                    self._healthy = True
-                    self._last_durable_success = True
-                    out: list[dict[str, Any]] = []
-                    for item in raw_list:
-                        try:
-                            if isinstance(item, dict) and item.get("entity_id"):
-                                device = dict(item)
-                                device["device_id"] = device.pop("entity_id")
-                                out.append(device)
-                        except Exception:
-                            continue
-                    return out
-                raise OSError("Invalid R.E.S.C.S. collection response.")
+                records, _ = self._collection(
+                    "/api/v1/records", {"namespace": RESCS_DEVICE_NAMESPACE}
+                )
+                out: list[dict[str, Any]] = []
+                for item in records:
+                    try:
+                        out.append(self._device_from_record(item))
+                    except Exception:
+                        continue
+                self._mark_remote_success()
+                return out
             except Exception as exc:
-                self._last_error = str(exc)
-                self._healthy = False
-                self._last_durable_success = False
+                self._mark_remote_failure(exc)
                 if not self._fallback_enabled:
                     raise
                 return self._fallback.list_devices()
@@ -814,15 +990,30 @@ class HttpRescsAdapter(RescsAdapter):
         with self._lock:
             self._fallback.clear()
             try:
-                # Try standard clear endpoint
-                self._request("POST", "/api/v1/clear")
-                self._last_error = None
-                self._healthy = True
-                self._last_durable_success = True
+                # The real API has no global /clear.  Only delete the
+                # namespaces C.O.R.E. owns; foreign records are preserved.
+                for namespace in (
+                    RESCS_RESOURCE_NAMESPACE,
+                    RESCS_RUNTIME_NAMESPACE,
+                    RESCS_DEVICE_NAMESPACE,
+                ):
+                    records, _ = self._collection(
+                        "/api/v1/records", {"namespace": namespace}
+                    )
+                    for record in records:
+                        record_id = record.get("id")
+                        if not isinstance(record_id, str) or not record_id:
+                            raise OSError(
+                                "R.E.S.C.S. record is missing its server id."
+                            )
+                        self._request(
+                            "DELETE",
+                            f"/api/v1/records/{quote(record_id, safe='')}",
+                            allow_not_found=True,
+                        )
+                self._mark_remote_success(durable=True)
             except Exception as exc:
-                self._last_error = str(exc)
-                self._healthy = False
-                self._last_durable_success = False
+                self._mark_remote_failure(exc)
                 if not self._fallback_enabled:
                     raise
 

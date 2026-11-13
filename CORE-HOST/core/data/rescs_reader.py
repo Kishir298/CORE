@@ -40,6 +40,9 @@ from .errors import (
 
 DEFAULT_NAMESPACE = "core.resources"
 MAX_HTTP_RESPONSE_BYTES = 10 * 1024 * 1024
+REMOTE_PAGE_SIZE = 500
+MAX_COLLECTION_RECORDS = 10_000
+MAX_FILE_CONTENT_BYTES = 10 * 1024 * 1024
 
 
 class RescsDataReader(ABC):
@@ -281,7 +284,7 @@ class HttpDataReader(RescsDataReader):
             raise DataRetrievalFailed("Invalid R.E.S.C.S. response.") from exc
 
     def _get_bytes(self, path: str, params: dict | None = None) -> bytes:
-        """Fetch binary content with bounded reads."""
+        """Fetch binary content with a hard read limit."""
         headers = {"Accept": "application/octet-stream"}
         if self._api_key:
             headers["X-API-Key"] = self._api_key
@@ -290,8 +293,7 @@ class HttpDataReader(RescsDataReader):
                 self._url(path, params), headers=headers
             )
             with urllib.request.urlopen(req, timeout=self._timeout) as response:
-                # Bound the read to prevent memory exhaustion
-                content = response.read(10 * 1024 * 1024)  # 10MB max
+                content = response.read(MAX_FILE_CONTENT_BYTES + 1)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 raise DataNotFound("Requested data was not found.")
@@ -304,46 +306,89 @@ class HttpDataReader(RescsDataReader):
             ) from exc
         except Exception as exc:
             raise DataRetrievalFailed("R.E.S.C.S. request failed.") from exc
+        if len(content) > MAX_FILE_CONTENT_BYTES:
+            raise DataRetrievalFailed(
+                "R.E.S.C.S. file content exceeds the read limit."
+            )
         return content
+
+    @staticmethod
+    def _parse_collection(data: Any) -> tuple[list[dict[str, Any]], int]:
+        if isinstance(data, list):
+            records = [item for item in data if isinstance(item, dict)]
+            return records, len(records)
+        if not isinstance(data, dict):
+            raise DataRetrievalFailed("Invalid R.E.S.C.S. collection response.")
+        records: list[dict[str, Any]] | None = None
+        for key in ("items", "records", "data"):
+            if isinstance(data.get(key), list):
+                records = [item for item in data[key] if isinstance(item, dict)]
+                break
+        if records is None:
+            raise DataRetrievalFailed("Invalid R.E.S.C.S. collection response.")
+        total = data.get("total")
+        if type(total) is not int or total < 0:
+            total = len(records)
+        return records, total
+
+    def _collection(
+        self, path: str, params: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Fetch every page of a R.E.S.C.S. collection, bounded.
+
+        The remote default page is 100; asking for 500 keeps large
+        collections from being silently truncated.
+        """
+        records: list[dict[str, Any]] = []
+        total: int | None = None
+        offset = 0
+        while True:
+            page_params = dict(params)
+            page_params["limit"] = REMOTE_PAGE_SIZE
+            page_params["offset"] = offset
+            page = self._get_json(path, page_params)
+            items, page_total = self._parse_collection(page)
+            if total is None:
+                total = page_total
+            records.extend(items)
+            if (
+                len(records) > MAX_COLLECTION_RECORDS
+                or (total is not None and total > MAX_COLLECTION_RECORDS)
+            ):
+                raise DataRetrievalFailed(
+                    "R.E.S.C.S. collection exceeds the read limit."
+                )
+            if not items:
+                break
+            if total is not None and len(records) >= total:
+                break
+            if len(items) < REMOTE_PAGE_SIZE:
+                break
+            offset += len(items)
+        return records, total if total is not None else len(records)
 
     def get_record(
         self, namespace: str, key: str, owner: str | None = None
     ) -> dict[str, Any]:
         effective_owner = self._check_owner(owner)
-        # Records are fetched by namespace/key path
-        data = self._get_json(
-            f"/api/v1/records/{urllib.parse.quote(namespace, safe='')}/{urllib.parse.quote(key, safe='')}",
-            {"owner": effective_owner},
+        records, _ = self._collection(
+            "/api/v1/records",
+            {
+                "namespace": namespace,
+                "key_prefix": key,
+                "owner": effective_owner,
+            },
         )
-        record = data.get("record", data) if isinstance(data, dict) else None
-        if not isinstance(record, dict) or not record.get("id"):
-            raise DataNotFound(f"Record was not found: {namespace}/{key}.")
-        return record
-
-    def _collection(
-        self, path: str, params: dict
-    ) -> tuple[list[dict], int]:
-        """
-        Fetch a collection with pagination support.
-        Returns (records, total_count).
-        """
-        data = self._get_json(path, params)
-        records: list[dict] = []
-        total = 0
-        if isinstance(data, dict):
-            for key in ("records", "items", "data"):
-                if isinstance(data.get(key), list):
-                    records = [r for r in data[key] if isinstance(r, dict)]
-                    break
-            # Remote total takes precedence
-            if "total" in data and isinstance(data["total"], int):
-                total = data["total"]
-            elif not total and records:
-                total = len(records)
-        elif isinstance(data, list):
-            records = [r for r in data if isinstance(r, dict)]
-            total = len(records)
-        return records, total
+        for record in records:
+            if record.get("namespace") != namespace or record.get("key") != key:
+                continue
+            if (
+                effective_owner is not None
+                and record.get("owner") != effective_owner
+            ):
+                continue
+            return record
+        raise DataNotFound(f"Record was not found: {namespace}/{key}.")
 
     def list_records(
         self,
@@ -354,17 +399,33 @@ class HttpDataReader(RescsDataReader):
         offset: int | None = None,
     ) -> list[dict[str, Any]]:
         effective_owner = self._check_owner(owner)
-        params = {
-            "namespace": namespace,
-            "key_prefix": key_prefix,
-            "owner": effective_owner,
-        }
-        if limit is not None:
-            params["limit"] = limit
+        records, _ = self._collection(
+            "/api/v1/records",
+            {
+                "namespace": namespace,
+                "key_prefix": key_prefix,
+                "owner": effective_owner,
+            },
+        )
+        result = []
+        for record in records:
+            if namespace is not None and record.get("namespace") != namespace:
+                continue
+            if key_prefix is not None and not str(record.get("key", "")).startswith(
+                key_prefix
+            ):
+                continue
+            if (
+                effective_owner is not None
+                and record.get("owner") != effective_owner
+            ):
+                continue
+            result.append(record)
         if offset is not None:
-            params["offset"] = offset
-        records, _ = self._collection("/api/v1/records", params)
-        return records
+            result = result[offset:]
+        if limit is not None:
+            result = result[:limit]
+        return result
 
     def search_records(
         self,
@@ -376,49 +437,53 @@ class HttpDataReader(RescsDataReader):
         offset: int | None = None,
     ) -> list[dict[str, Any]]:
         effective_owner = self._check_owner(owner)
-        params = {
-            "query": query,
-            "namespace": namespace,
-            "key_prefix": key_prefix,
-            "owner": effective_owner,
-        }
-        if limit is not None:
-            params["limit"] = limit
+        # Search is the ``query`` mode of the records collection.  R.E.S.C.S.
+        # ignores key_prefix in that mode, so apply it (and owner/namespace)
+        # locally as a fail-closed filter.
+        records, _ = self._collection(
+            "/api/v1/records",
+            {
+                "query": query,
+                "namespace": namespace,
+                "owner": effective_owner,
+            },
+        )
+        result = []
+        for record in records:
+            if namespace is not None and record.get("namespace") != namespace:
+                continue
+            if key_prefix is not None and not str(record.get("key", "")).startswith(
+                key_prefix
+            ):
+                continue
+            if (
+                effective_owner is not None
+                and record.get("owner") != effective_owner
+            ):
+                continue
+            result.append(record)
         if offset is not None:
-            params["offset"] = offset
-        records, _ = self._collection("/api/v1/records/search", params)
-        return records
+            result = result[offset:]
+        if limit is not None:
+            result = result[:limit]
+        return result
 
     def get_file_metadata(self, file_id: str) -> dict[str, Any]:
         data = self._get_json(
-            f"/api/v1/files/{urllib.parse.quote(file_id, safe='')}/metadata",
-            {"owner": self._owner_scope},
+            f"/api/v1/files/{urllib.parse.quote(file_id, safe='')}"
         )
-        meta = data.get("file", data) if isinstance(data, dict) else None
-        if not isinstance(meta, dict) or not meta.get("id"):
+        if not isinstance(data, dict) or not data.get("id"):
             raise DataNotFound("File was not found.")
-        if self._owner_scope is not None and meta.get("owner") != self._owner_scope:
+        if self._owner_scope is not None and data.get("owner") != self._owner_scope:
             raise DataAccessDenied("Access denied for requested file owner.")
-        return meta
+        return data
 
     def get_file_bytes(self, file_id: str) -> tuple[dict[str, Any], bytes]:
-        # Fetch metadata first
+        # Owner is checked before any content request.
         meta = self.get_file_metadata(file_id)
-        # Fetch binary content - the server returns base64 encoded content
-        import base64
-        data = self._get_json(
-            f"/api/v1/files/{urllib.parse.quote(file_id, safe='')}/content",
-            {"owner": self._owner_scope},
+        content = self._get_bytes(
+            f"/api/v1/files/{urllib.parse.quote(file_id, safe='')}/content"
         )
-        if not isinstance(data, dict):
-            raise DataRetrievalFailed("Invalid file content response.")
-        content_b64 = data.get("content_base64")
-        if not isinstance(content_b64, str):
-            raise DataRetrievalFailed("Invalid file content encoding.")
-        try:
-            content = base64.b64decode(content_b64, validate=True)
-        except Exception as exc:
-            raise DataRetrievalFailed("Invalid file content encoding.") from exc
         return meta, content
 
 

@@ -85,7 +85,7 @@ def test_invalid_request_type_is_reported(value):
 
 def test_file_owner_is_checked_before_content():
     reader = HttpDataReader("http://rescs", "alice")
-    with patch.object(reader, "_get_json", return_value={"file": {"id": "f", "owner": "bob"}}) as call:
+    with patch.object(reader, "_get_json", return_value={"id": "f", "owner": "bob"}) as call:
         with pytest.raises(DataAccessDenied):
             reader.get_file_bytes("f")
     assert call.call_count == 1

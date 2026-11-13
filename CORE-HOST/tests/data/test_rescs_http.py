@@ -25,6 +25,7 @@ def _reader(fixture, scope="device-a", cross=False, timeout=2.0):
         owner_scope=scope,
         allow_cross_owner=cross,
         timeout=timeout,
+        api_key=fixture.api_key,
     )
 
 

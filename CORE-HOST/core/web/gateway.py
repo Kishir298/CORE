@@ -8,15 +8,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import threading
 import time
 from urllib.parse import parse_qs, urlparse
 
+from ..version import __version__ as CORE_VERSION
 from .accounts import Accounts
+from .events import EventBus, TicketStore
 from .library import Library
 from .services import CATALOG, Services
 from .storage import RecordConflict, RescsStorage
+from .ws import WebSocketServer, available as ws_available
 
 MAX_BODY = 256 * 1024
 
@@ -61,7 +65,14 @@ class Gateway:
         self.services = Services(self.data, self.config["roots"], self.config["rescs_key"], self.config["models"])
         self.services.profile_models = self.config.get("profile_models", {})
         self.attempts = defaultdict(deque)
+        self.device_attempts = defaultdict(deque)
         self.registrations = defaultdict(deque)
+        self.events = EventBus()
+        self.tickets = TicketStore()
+        self.ws_port = int(os.environ.get("CORE_WS_PORT", "8781"))
+        self.ws_available = ws_available()
+        self.ws_running = False
+        self.idempotency = {}
 
     @staticmethod
     def validate_origin(origin):
@@ -93,7 +104,16 @@ class Gateway:
         token = self.token(headers)
         user = self.accounts.session(token)
         public = headers.get("Host", "") == urlparse(self.config["public_origin"]).netloc
-        if method == "GET" and route == "/api/health": return 200, {"service": "CORE", "api": 1, "status": "ready", "capabilities": ["conditional_records_v1", "folders_sharing_trash_v1", "admin_reauth_v1"]}, None
+        if method == "GET" and route == "/api/health":
+            return 200, {
+                "service": "CORE", "api": 1, "version": CORE_VERSION, "status": "ready",
+                "ws": bool(self.ws_available),
+                "capabilities": [
+                    "conditional_records_v1", "folders_sharing_trash_v1", "admin_reauth_v1",
+                    "ws_ticket_v1", "session_renewal_v1", "device_credentials_v1",
+                    "device_management_v1", "job_idempotency_v1",
+                ],
+            }, None
         if method == 'GET' and route == '/api/ready':
             try:
                 self.storage.request('GET','/health/ready')
@@ -125,7 +145,26 @@ class Gateway:
                 attempts.append(time.time())
             session, csrf, user = self.accounts.login(body.get("username"), body.get("password"))
             with self.lock: self.attempts[remote].clear()
+            result = {"profile": user, "csrf": csrf}
+            if body.get("remember_device"):
+                device = self.accounts.issue_device(
+                    user["id"], body.get("device_name"), body.get("device_type", "desktop"),
+                    body.get("platform", ""),
+                )
+                result["device_credential"] = device["credential"]
+                result["device"] = {key: device[key] for key in ("device_id", "device_name", "device_type", "platform")}
             self.accounts.audit(user["id"], "login")
+            return 200, result, self.cookie(session, public)
+        if method == "POST" and route == "/api/login/device":
+            with self.lock:
+                attempts = self.device_attempts[remote]
+                while attempts and time.time()-attempts[0] > 900: attempts.popleft()
+                if len(attempts) >= 8: raise PermissionError("Too many attempts. Try again in 15 minutes.")
+                attempts.append(time.time())
+            row = self.accounts.device_login(body.get("credential"))
+            session, csrf, user = self.accounts.issue_session(row)
+            with self.lock: self.device_attempts[remote].clear()
+            self.accounts.audit(user["id"], "device_login")
             return 200, {"profile": user, "csrf": csrf}, self.cookie(session, public)
         if user is None: raise PermissionError("Sign in to C.O.R.E.")
         if method != "GET" and not hmac.compare_digest(str(headers.get("X-Core-CSRF", "")), user["csrf"]):
@@ -138,9 +177,35 @@ class Gateway:
         if method == "POST" and route == "/api/password":
             self.accounts.change_password(user["id"],body.get("current_password"),body.get("new_password"))
             self.accounts.audit(user["id"],"password_changed")
+            self.events.publish([user["id"]], {"type": "session.revoked", "reason": "password_changed",
+                                               "message": "The password changed. Sign in again."})
             return 200, {"password_changed": True, "sign_in_required": True}, self.cookie("",public,True)
+        if method == "POST" and route == "/api/session/renew":
+            renewed = self.accounts.renew_session(token)
+            if renewed is None:
+                raise PermissionError("This session has expired. Sign in again.")
+            return 200, renewed, None
+        if method == "POST" and route == "/api/ws-ticket":
+            if not self.ws_available:
+                raise ConnectionError("This CORE-HOST does not have the event channel enabled.")
+            return 200, self.tickets.issue(user["id"]), None
         if user.get("password_change_required"):
             raise PermissionError("Change your temporary password before using the portal.")
+        if route == "/api/devices" and method == "GET":
+            everyone = query.get("all", ["0"])[0] == "1"
+            if everyone and user["role"] != "owner":
+                raise PermissionError("Host owner access is required.")
+            devices = self.accounts.devices(None if everyone else user["id"])
+            return 200, {"devices": devices}, None
+        if route.startswith("/api/devices/"):
+            parts = route.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "revoke" or method != "POST":
+                raise ValueError("Invalid device route.")
+            target = self.accounts.revoke_device(parts[2], None if user["role"] == "owner" else user["id"])
+            self.accounts.audit(user["id"], "device_revoked", {"device": parts[2]})
+            self.events.publish([target], {"type": "session.revoked", "reason": "device_revoked",
+                                           "device_id": parts[2], "message": "This device was revoked by the account owner."})
+            return 200, {"revoked": True}, None
         if route == "/api/reauth" and method == "POST":
             if user['role']!='owner':raise PermissionError("Host owner access is required.")
             with self.lock:
@@ -244,7 +309,31 @@ class Gateway:
         if route == "/api/jobs" and method == "POST":
             if body.get("service") == "rescs" and self.storage.endpoint != "http://127.0.0.1:8081":
                 raise ValueError("Managed RESCS uses http://127.0.0.1:8081. Keep the configured backend running independently or explicitly change Settings before managed startup.")
-            result = self.services.start(body.get("service"), user, body.get("prompt", ""), body.get("mode", "plan"), persist=body.get("persist", True))
+            key = headers.get("Idempotency-Key") or headers.get("idempotency-key") or ""
+            job_key = None
+            if key:
+                if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", str(key)):
+                    raise ValueError("The Idempotency-Key must be 8–128 safe characters.")
+                job_key = (user["id"], str(key))
+                with self.lock:
+                    cached = self.idempotency.get(job_key)
+                    if cached:
+                        return 202, self.services.get(cached, user).view(), None
+                    if job_key in self.idempotency:
+                        raise ValueError("This request is already starting. Poll its job shortly.")
+                    self.idempotency[job_key] = None
+            try:
+                result = self.services.start(body.get("service"), user, body.get("prompt", ""), body.get("mode", "plan"), persist=body.get("persist", True))
+            except Exception:
+                if job_key is not None:
+                    with self.lock: self.idempotency.pop(job_key, None)
+                raise
+            if job_key is not None:
+                with self.lock:
+                    self.idempotency[job_key] = result["id"]
+                    if len(self.idempotency) > 2048:
+                        for stale in list(self.idempotency)[:1024]:
+                            self.idempotency.pop(stale, None)
             self.accounts.audit(user["id"], "service_requested", {"service": body.get("service"), "job": result["id"]})
             return 202, result, None
         if route.startswith("/api/jobs/"):
@@ -267,6 +356,9 @@ class Gateway:
                 if method == "POST":
                     result = self.accounts.review(body.get("user_id"), body.get("action"))
                     self.accounts.audit(user["id"], "access_reviewed", {"profile":result["id"],"action":body.get("action")})
+                    if body.get("action") in ("revoke", "reject"):
+                        self.events.publish([result["id"]], {"type": "session.revoked", "reason": "access_revoked",
+                                                             "message": "Access to this account was revoked."})
                     return 200, result, None
             if route == "/api/profiles":
                 if method == "GET": return 200, {"profiles": self.accounts.profiles()}, None
@@ -394,6 +486,12 @@ def serve(app=None, *, directory=None, port=8780, open_browser=False, start_stor
     if threading.current_thread() is threading.main_thread() and hasattr(signal,"SIGBREAK"):
         previous_break=signal.getsignal(signal.SIGBREAK)
         signal.signal(signal.SIGBREAK,terminate)
+    event_server = WebSocketServer(gateway.events, gateway.tickets, port=gateway.ws_port)
+    gateway.ws_running = event_server.start()
+    if gateway.ws_running:
+        print(f"C.O.R.E. event channel: ws://127.0.0.1:{gateway.ws_port}/api/ws")
+    elif gateway.ws_available:
+        print("C.O.R.E. event channel could not start; clients continue with polling.")
     print(f"C.O.R.E. portal: http://127.0.0.1:{port}")
     if gateway.accounts.empty(): print("First-run setup key:", gateway.setup_key)
     print("Keep this window open. Ctrl+C stops managed services.")
@@ -428,5 +526,6 @@ def serve(app=None, *, directory=None, port=8780, open_browser=False, start_stor
     finally:
         if previous_term is not None: signal.signal(signal.SIGTERM, previous_term)
         if previous_break is not None: signal.signal(signal.SIGBREAK,previous_break)
+        event_server.stop()
         server.server_close(); gateway.close()
         if app: app.stop()

@@ -1,35 +1,48 @@
 """Deterministic local R.E.S.C.S. HTTP fixture for data-layer tests.
 
-Implements the R.E.S.C.S. HTTP data contract over ``127.0.0.1`` using only
-the standard library. No real R.E.S.C.S. installation required.
+Implements the R.E.S.C.S. v1 HTTP data contract over ``127.0.0.1``
+using only the standard library. No real R.E.S.C.S. installation
+required.
 
-Endpoints (all under ``/api/v1/`` per R.E.S.C.S. contract):
+Endpoints::
 
-- ``GET /api/v1/records?namespace=&key_prefix=&owner=&query=`` (``query`` switches
-  to substring search; without it this is a filtered list)
-- ``GET /api/v1/records/search?query=&namespace=&key_prefix=&owner=``
-- ``GET /api/v1/records/{namespace}/{key}?owner=`` (404 when absent)
-- ``GET /api/v1/files/{file_id}/metadata`` (404 when absent)
-- ``GET /api/v1/files/{file_id}/content`` (``{"file", "content_base64"}``)
+- ``GET /health`` -> ``{service, version, status, checks}`` (no auth)
+- ``GET /api/v1/records?namespace=&key_prefix=&owner=&query=&limit=&offset=``
+  (``query`` switches to search, which ignores ``key_prefix``)
+- ``GET /api/v1/records/{record_id}``
+- ``PUT /api/v1/records`` (upsert by ``namespace/key``)
+- ``POST /api/v1/records`` (create; conflict when present)
+- ``DELETE /api/v1/records/{record_id}``
+- ``GET /api/v1/files/{file_id}`` (metadata object, no wrapper)
+- ``GET /api/v1/files/{file_id}/content`` (raw binary)
+
+Record collection responses are ``{items, total, limit, offset}`` and
+are ordered by ``(updated_at, id)`` like the real service. All routes
+except ``/health`` require ``X-API-Key``.
 
 Failure injection via :attr:`RescsFixture.fail_mode`:
 
 - ``None`` — normal operation
-- ``"unauthorized"`` — all reads answer 403
-- ``"error"`` — all reads answer 500
-- ``"timeout"`` — all reads sleep past the client timeout
-- ``"garbage"`` — all reads answer 200 with a non-JSON body
+- ``"unauthorized"`` — all requests answer 403
+- ``"error"`` — all requests answer 500
+- ``"timeout"`` — all requests sleep past the client timeout
+- ``"garbage"`` — all requests answer 200 with a non-JSON body
 """
 
 from __future__ import annotations
 
-import base64
 import hashlib
+import hmac
 import json
 import threading
 import time
 import urllib.parse
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+API_KEY = "rescs-fixture-key-0123456789"
+DEFAULT_OWNER = "system"
+MAX_PAGE_SIZE = 500
 
 
 def _seed_records():
@@ -43,9 +56,10 @@ def _seed_records():
         ("core.memory", "shared-cache", "device-b", "pilot shared", 8),
         ("core.other", "pilot-misc", "device-a", "pilot misc", 7),
     ]
-    for namespace, key, owner, topic, day in specs:
+    for index, (namespace, key, owner, topic, day) in enumerate(specs, start=1):
+        record_id = f"rec-{index:06d}"
         records[(namespace, key)] = {
-            "id": f"{namespace}/{key}",
+            "id": record_id,
             "namespace": namespace,
             "key": key,
             "value": {"topic": topic, "index": day},
@@ -85,7 +99,7 @@ def _seed_files():
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = "RescsFixture/0.1"
+    server_version = "RescsFixture/0.2"
 
     def log_message(self, *args):  # silence test output
         pass
@@ -106,99 +120,269 @@ class _Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
-    def do_GET(self):
-        fixture = self.server.fixture  # type: ignore[attr-defined]
+    def _preflight(self, fixture) -> bool:
         mode = fixture.fail_mode
         if mode == "timeout":
             time.sleep(fixture.timeout_delay)
-            return self._send(200, {"records": []})
+            self._send(200, {"items": []})
+            return False
         if mode == "unauthorized":
-            return self._send(403, {"error": "forbidden"})
+            self._send(403, {"error": "forbidden"})
+            return False
         if mode == "error":
-            return self._send(500, {"error": "boom"})
+            self._send(500, {"error": "boom"})
+            return False
         if mode == "garbage":
-            return self._send(200, "not-json{{{", "text/plain")
-        parsed = urllib.parse.urlparse(self.path)
-        params = {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query).items()}
-        parts = [p for p in parsed.path.split("/") if p]
+            self._send(200, "not-json{{{", "text/plain")
+            return False
+        return True
+
+    def _authorized(self, fixture) -> bool:
+        if not fixture.api_key:
+            return True
+        supplied = self.headers.get("X-API-Key", "")
+        if hmac.compare_digest(supplied, fixture.api_key):
+            return True
+        self._send(401, {"error": "a valid X-API-Key header is required"})
+        return False
+
+    @staticmethod
+    def _parts(path: str) -> list[str]:
+        return [
+            urllib.parse.unquote(part)
+            for part in urllib.parse.urlparse(path).path.split("/")
+            if part
+        ]
+
+    @staticmethod
+    def _params(path: str) -> dict[str, str]:
+        parsed = urllib.parse.urlparse(path)
+        return {
+            key: values[0]
+            for key, values in urllib.parse.parse_qs(parsed.query).items()
+        }
+
+    def _json_body(self) -> dict | None:
         try:
-            # All endpoints under /api/v1/
-            if parts[:2] == ["api", "v1"] and parts[2:3] == ["records"] and len(parts) == 5:
-                return self._record_one(fixture, parts[3], parts[4], params)
-            if parts[:2] == ["api", "v1"] and parts[2:4] == ["records", "search"]:
-                return self._record_search(fixture, params)
-            if parts[:2] == ["api", "v1"] and parts[2:3] == ["records"] and len(parts) == 3:
-                return self._record_list(fixture, params)
-            if len(parts) == 5 and parts[:3] == ["api", "v1", "files"] and parts[4] == "metadata":
-                return self._file_metadata(fixture, parts[3])
-            if len(parts) == 5 and parts[:3] == ["api", "v1", "files"] and parts[4] == "content":
-                return self._file_content(fixture, parts[3])
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0:
+                return None
+            raw = self.rfile.read(length)
+            payload = json.loads(raw)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _dispatch(self, method: str):
+        fixture = self.server.fixture  # type: ignore[attr-defined]
+        fixture.paths.append((method, self.path))
+        if not self._preflight(fixture):
+            return
+        parts = self._parts(self.path)
+        if method == "GET" and parts == ["health"]:
+            return self._send(
+                200,
+                {
+                    "service": "rescs",
+                    "version": "fixture",
+                    "status": "ok",
+                    "checks": {"database": "ok"},
+                },
+            )
+        if not self._authorized(fixture):
+            return
+        params = self._params(self.path)
+        try:
+            if parts[:3] == ["api", "v1", "records"]:
+                if method == "GET" and len(parts) == 3:
+                    return self._record_list(fixture, params)
+                if method == "GET" and len(parts) == 4:
+                    return self._record_one(fixture, parts[3])
+                if method == "PUT" and len(parts) == 3:
+                    return self._record_put(fixture, self._json_body())
+                if method == "POST" and len(parts) == 3:
+                    return self._record_post(fixture, self._json_body())
+                if method == "DELETE" and len(parts) == 4:
+                    return self._record_delete(fixture, parts[3])
+            if parts[:3] == ["api", "v1", "files"]:
+                if method == "GET" and len(parts) == 3:
+                    return self._file_list(fixture, params)
+                if method == "GET" and len(parts) == 4:
+                    return self._file_metadata(fixture, parts[3])
+                if method == "GET" and len(parts) == 5 and parts[4] == "content":
+                    return self._file_content(fixture, parts[3])
         except (BrokenPipeError, ConnectionResetError):
             return None
         return self._send(404, {"error": "not found"})
 
+    def do_GET(self):
+        return self._dispatch("GET")
+
+    def do_PUT(self):
+        return self._dispatch("PUT")
+
+    def do_POST(self):
+        return self._dispatch("POST")
+
+    def do_DELETE(self):
+        return self._dispatch("DELETE")
+
     def _filtered(self, fixture, params, query=None):
+        owner = params.get("owner") or fixture.principal_owner
         records = []
         for record in fixture.records.values():
             if params.get("namespace") and record["namespace"] != params["namespace"]:
                 continue
-            if params.get("key_prefix") and not record["key"].startswith(params["key_prefix"]):
+            if query is None and params.get("key_prefix") and not record["key"].startswith(
+                params["key_prefix"]
+            ):
                 continue
-            if params.get("owner") and record["owner"] != params["owner"]:
+            if owner and record["owner"] != owner:
                 continue
-            if query and query.lower() not in json.dumps(record["value"]).lower() \
-                    and query.lower() not in record["key"].lower():
-                continue
+            if query is not None:
+                needle = query.lower()
+                haystack = json.dumps(
+                    [record["value"], record.get("metadata", {})],
+                    sort_keys=True,
+                    default=str,
+                ).lower()
+                if needle not in record["key"].lower() and needle not in haystack:
+                    continue
             records.append(record)
+        records.sort(key=lambda record: (record["updated_at"], record["id"]))
         return records
 
+    def _page(self, fixture, params, query=None):
+        try:
+            limit = int(params.get("limit", "100"))
+            offset = int(params.get("offset", "0"))
+        except (TypeError, ValueError):
+            self._send(400, {"error": "invalid pagination"})
+            return None
+        if limit < 1 or limit > MAX_PAGE_SIZE or offset < 0:
+            self._send(400, {"error": "invalid pagination"})
+            return None
+        records = self._filtered(fixture, params, query)
+        return records, limit, offset
+
     def _record_list(self, fixture, params):
-        if params.get("query"):
-            return self._send(200, {"records": self._filtered(fixture, params, params["query"])})
-        return self._send(200, {"records": self._filtered(fixture, params)})
-
-    def _record_search(self, fixture, params):
-        return self._send(200, {"records": self._filtered(fixture, params, params.get("query", ""))})
-
-    def _record_one(self, fixture, namespace, key, params):
-        namespace = urllib.parse.unquote(namespace)
-        key = urllib.parse.unquote(key)
-        record = fixture.records.get((namespace, key))
-        if record is None:
-            return self._send(404, {"error": "not found"})
-        if params.get("owner") and record["owner"] != params["owner"]:
-            return self._send(404, {"error": "not found"})
-        return self._send(200, {"record": record})
-
-    def _file_metadata(self, fixture, file_id):
-        entry = fixture.files.get(urllib.parse.unquote(file_id))
-        if entry is None:
-            return self._send(404, {"error": "not found"})
-        meta, _content = entry
-        return self._send(200, {"file": meta})
-
-    def _file_content(self, fixture, file_id):
-        entry = fixture.files.get(urllib.parse.unquote(file_id))
-        if entry is None:
-            return self._send(404, {"error": "not found"})
-        meta, content = entry
+        query = params.get("query")
+        page = self._page(fixture, params, query or None)
+        if page is None:
+            return None
+        records, limit, offset = page
         return self._send(
             200,
             {
-                "file": meta,
-                "content_base64": base64.b64encode(content).decode("ascii"),
+                "items": records[offset : offset + limit],
+                "total": len(records),
+                "limit": limit,
+                "offset": offset,
             },
+        )
+
+    def _record_one(self, fixture, record_id):
+        record = next(
+            (item for item in fixture.records.values() if item["id"] == record_id),
+            None,
+        )
+        if record is None:
+            return self._send(404, {"error": "not found"})
+        if not fixture.can_access(record):
+            return self._send(403, {"error": "forbidden"})
+        return self._send(200, record)
+
+    def _record_put(self, fixture, payload):
+        if not payload or not all(key in payload for key in ("namespace", "key", "value")):
+            return self._send(400, {"error": "namespace, key and value are required"})
+        owner = payload.get("owner") or fixture.principal_owner
+        existing = fixture.records.get((payload["namespace"], payload["key"]))
+        if existing is not None:
+            if existing["owner"] != owner:
+                return self._send(403, {"error": "record owner mismatch"})
+            existing["value"] = payload["value"]
+            existing["metadata"] = payload.get("metadata") or {}
+            existing["version"] += 1
+            existing["etag"] = f"etag-{existing['id']}-{existing['version']}"
+            existing["updated_at"] = fixture.now()
+            return self._send(200, existing)
+        record = fixture.new_record(
+            payload["namespace"],
+            payload["key"],
+            payload["value"],
+            payload.get("metadata") or {},
+            owner,
+        )
+        return self._send(200, record)
+
+    def _record_post(self, fixture, payload):
+        if not payload or not all(key in payload for key in ("namespace", "key", "value")):
+            return self._send(400, {"error": "namespace, key and value are required"})
+        if (payload["namespace"], payload["key"]) in fixture.records:
+            return self._send(409, {"error": "record already exists"})
+        owner = payload.get("owner") or fixture.principal_owner
+        record = fixture.new_record(
+            payload["namespace"],
+            payload["key"],
+            payload["value"],
+            payload.get("metadata") or {},
+            owner,
+        )
+        return self._send(201, record)
+
+    def _record_delete(self, fixture, record_id):
+        natural_key = next(
+            (
+                key
+                for key, item in fixture.records.items()
+                if item["id"] == record_id
+            ),
+            None,
+        )
+        if natural_key is None:
+            return self._send(404, {"error": "not found"})
+        del fixture.records[natural_key]
+        return self._send(204, b"")
+
+    def _file_metadata(self, fixture, file_id):
+        entry = fixture.files.get(file_id)
+        if entry is None:
+            return self._send(404, {"error": "not found"})
+        meta, _content = entry
+        return self._send(200, meta)
+
+    def _file_content(self, fixture, file_id):
+        entry = fixture.files.get(file_id)
+        if entry is None:
+            return self._send(404, {"error": "not found"})
+        _meta, content = entry
+        return self._send(200, content, "application/octet-stream")
+
+    def _file_list(self, fixture, params):
+        owner = params.get("owner") or fixture.principal_owner
+        items = [
+            meta
+            for meta, _content in fixture.files.values()
+            if not owner or meta["owner"] == owner
+        ]
+        return self._send(
+            200,
+            {"items": items, "total": len(items), "limit": len(items), "offset": 0},
         )
 
 
 class RescsFixture:
     """Running deterministic R.E.S.C.S. HTTP fixture (context-managed)."""
 
-    def __init__(self):
+    def __init__(self, api_key: str | None = API_KEY):
         self.records = _seed_records()
         self.files = _seed_files()
+        self.api_key = api_key
+        self.principal_owner = DEFAULT_OWNER
         self.fail_mode: str | None = None
         self.timeout_delay = 5.0
+        self.paths: list[tuple[str, str]] = []
+        self._next = len(self.records) + 1
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -208,6 +392,32 @@ class RescsFixture:
         assert self._server is not None, "fixture is not running"
         host, port = self._server.server_address
         return f"http://{host}:{port}"
+
+    def can_access(self, _record) -> bool:
+        return True
+
+    @staticmethod
+    def now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+    def new_record(self, namespace, key, value, metadata, owner):
+        record_id = f"rec-{self._next:06d}"
+        self._next += 1
+        moment = self.now()
+        record = {
+            "id": record_id,
+            "namespace": namespace,
+            "key": key,
+            "value": value,
+            "metadata": metadata,
+            "owner": owner,
+            "version": 1,
+            "etag": f"etag-{record_id}-1",
+            "created_at": moment,
+            "updated_at": moment,
+        }
+        self.records[(namespace, key)] = record
+        return record
 
     def start(self) -> RescsFixture:
         """Start serving on an ephemeral localhost port."""
@@ -245,4 +455,4 @@ class RescsFixture:
         self.stop()
 
 
-__all__ = ["RescsFixture"]
+__all__ = ["API_KEY", "RescsFixture"]

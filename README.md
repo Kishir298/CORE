@@ -1,6 +1,6 @@
 # RISARMS Portal for the Raspberry Pi
 
-Release 0.5.0, 6 November 2026. This combined source package replaces the mandatory laptop backend with a standalone Pi server. Raspberry Pi OS Lite 64-bit stays installed. CORE and RESCS run as separate private services on the SSD. Browser access is primary; CORE-CLIENT remains an optional offline-capable app.
+Release 0.5.0, 6 November 2026. This combined source package replaces the mandatory laptop backend with a standalone Pi server. Raspberry Pi OS Lite 64-bit stays installed. CORE and RESCS run as separate private services on the SSD. Browser access is primary; RISARMS-UI (the canonical desktop application) and CORE-CLIENT (native protocol client) provide optional offline-capable access.
 
 Read **docs/CORE-Pi-Setup-and-Changes-2026-11-06.docx** or its Markdown equivalent before installation. Read **VALIDATION.md** for executed checks and hardware limits. This is an experimental ARM64 deployment, tested as source on Linux x86_64; it is not a preflashed OS image or a certified Pi appliance.
 
@@ -59,9 +59,9 @@ The shared root-owned `/run/risarms-inference/queue.lock` coordinates CORE with 
 
 The browser includes metadata listings/search, explicit plain-text preview/download, 8 MiB uploads, private folders, explicit read-only folder shares, Trash/restore and permanent purge. The initial account quota is 250 MiB including Trash; owner `/api/quotas` may set 8 MiB to 10 GiB. File bytes stay in RESCS; folder/share/trash metadata is in CORE `library.sqlite3`. Back them up together. Legacy files without catalog entries appear in the account's My Files root.
 
-Owner admin routes require password re-entry for five minutes; this never grants private content belonging to other accounts. The gateway derives identity from the session and signs per-request RESCS owner/method/path assertions. ROOT/OS operators can inspect plaintext; client-side encryption remains deferred. Keep ports 8780, 8081 and 11434 private.
+Owner admin routes require password re-entry for five minutes; this never grants private content belonging to other accounts. The gateway derives identity from the session and signs per-request RESCS owner/method/path assertions. ROOT/OS operators can inspect plaintext; client-side encryption remains deferred. Keep ports 8780 (HTTPS API), 8781 (loopback event channel), 8081 and 11434 private.
 
-Browser use over your LAN requires no internet. When disconnected from the Pi, use the optional native client for cached files/records and provisioned local AI; there is no browser service-worker cache. Native certificate trust must also be configured. `core-host`, `core-client` and `rescs` remain separate installed commands. Use systemd to manage Pi daemons and `sudo risarms-admin` for service-account diagnostics/benchmarking.
+Browser use over your LAN requires no internet. When disconnected from the Pi, use RISARMS-UI for cached files/records, device credentials and provisioned local AI; there is no browser service-worker cache. Native certificate trust must also be configured. `core-host`, `core-client` and `rescs` remain separate installed commands. Use systemd to manage Pi daemons and `sudo risarms-admin` for service-account diagnostics/benchmarking.
 
 ## Other applications and remote access
 

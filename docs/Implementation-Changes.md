@@ -27,6 +27,8 @@ RESCS database/files. The administrator has account/quota controls but no privat
 content bypass. Root/OS compromise and client-side encryption remain separate.
 
 New CORE APIs: POST /api/reauth; GET /api/ready; owner GET /api/ai-status;
+POST /api/login/device; POST /api/session/renew; POST /api/ws-ticket;
+GET /api/devices; POST /api/devices/{id}/revoke; Idempotency-Key on POST /api/jobs;
 GET/POST /api/folders; POST /api/shares; owner GET/POST /api/quotas; file
 preview/move/trash/restore/purge routes. Legacy file delete moves to Trash.
 Existing account IDs and namespace/owner/CAS record contracts are preserved.
