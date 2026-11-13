@@ -18,6 +18,7 @@ from ..version import __version__ as CORE_VERSION
 from .accounts import Accounts
 from .events import EventBus, TicketStore
 from .library import Library
+from .messages import Messages
 from .services import CATALOG, Services
 from .storage import RecordConflict, RescsStorage
 from .ws import WebSocketServer, available as ws_available
@@ -58,6 +59,7 @@ class Gateway:
         self.validate_origin(self.config["public_origin"])
         self.save_config()
         self.accounts = Accounts(self.data)
+        self.messages = Messages(self.data, self.accounts)
         self.library = Library(self.data)
         self.admin_attempts = defaultdict(deque)
         self.setup_key = secrets.token_urlsafe(32)
@@ -111,7 +113,7 @@ class Gateway:
                 "capabilities": [
                     "conditional_records_v1", "folders_sharing_trash_v1", "admin_reauth_v1",
                     "ws_ticket_v1", "session_renewal_v1", "device_credentials_v1",
-                    "device_management_v1", "job_idempotency_v1",
+                    "device_management_v1", "job_idempotency_v1", "messaging_v1",
                 ],
             }, None
         if method == 'GET' and route == '/api/ready':
@@ -206,6 +208,30 @@ class Gateway:
             self.events.publish([target], {"type": "session.revoked", "reason": "device_revoked",
                                            "device_id": parts[2], "message": "This device was revoked by the account owner."})
             return 200, {"revoked": True}, None
+        # Human-to-human messaging. Available to every approved account and
+        # deliberately grants no service, tool or model access.
+        if route == "/api/messages":
+            if method == "POST":
+                key = headers.get("Idempotency-Key") or headers.get("idempotency-key") or ""
+                result = self.messages.send(
+                    user, body.get("recipient"), body.get("body"),
+                    client_id=body.get("client_id") or key,
+                )
+                self.accounts.audit(user["id"], "message_sent", {"message": result["id"]})
+                self.events.publish([result["recipient"]], {
+                    "type": "message.received", "from": user["id"], "message_id": result["id"],
+                })
+                return 201, result, None
+            if method == "GET":
+                peer = query.get("peer", [""])[0]
+                if peer:
+                    after = float(query.get("after", ["0"])[0] or 0)
+                    return 200, {"messages": self.messages.conversation(user["id"], peer, after)}, None
+                return 200, {"threads": self.messages.threads(user["id"])}, None
+        if route.startswith("/api/messages/"):
+            parts = route.strip("/").split("/")
+            if len(parts) == 4 and parts[3] == "read" and method == "POST":
+                return 200, self.messages.mark_read(user["id"], parts[2]), None
         if route == "/api/reauth" and method == "POST":
             if user['role']!='owner':raise PermissionError("Host owner access is required.")
             with self.lock:
@@ -465,7 +491,7 @@ class Gateway:
         return Handler
 
     def close(self):
-        self.services.close(); self.library.close(); self.accounts.close()
+        self.services.close(); self.library.close(); self.messages.close(); self.accounts.close()
 
 
 def serve(app=None, *, directory=None, port=8780, open_browser=False, start_storage=False):
