@@ -65,7 +65,8 @@ class Gateway:
         self.admin_attempts = defaultdict(deque)
         self.setup_key = secrets.token_urlsafe(32)
         self.storage = RescsStorage(self.config["rescs_url"], self.config["rescs_key"])
-        self.services = Services(self.data, self.config["roots"], self.config["rescs_key"], self.config["models"])
+        self.services = Services(self.data, self.config["roots"], self.config["rescs_key"],
+                                 self.config["models"], access=self.accounts.service_allowed)
         self.services.profile_models = self.config.get("profile_models", {})
         self.attempts = defaultdict(deque)
         self.device_attempts = defaultdict(deque)
@@ -244,7 +245,7 @@ class Gateway:
                 attempts.clear()
             self.accounts.audit(user['id'],'admin_unlocked')
             return 200, {'unlocked_seconds':300}, None
-        if route in ('/api/settings','/api/access','/api/profiles','/api/audit','/api/quotas') or (route=='/api/jobs' and method=='POST' and body.get('service') in ('ascs','tiviss','rescs')):
+        if route in ('/api/settings','/api/access','/api/profiles','/api/audit','/api/quotas') or (route=='/api/jobs' and method=='POST' and body.get('service')=='rescs'):
             if user['role']!='owner':raise PermissionError("Host owner access is required.")
             if user.get('admin_until',0)<=time.time():raise PermissionError("Re-enter your password to unlock administration for five minutes.")
         if route=='/api/quotas':
@@ -264,9 +265,40 @@ class Gateway:
             self.library.share(user['id'],body.get('folder'),recipient,action=='revoke')
             self.accounts.audit(user['id'],'share_'+action)
             return 200, {'saved':True}, None
+        if route == "/api/service-grants" and method == "GET":
+            target = (query.get("profile_id") or query.get("profile") or [""])[0]
+            if target and target != user["id"] and user["role"] != "owner":
+                raise PermissionError("Host owner access is required.")
+            if user["role"] == "owner":
+                profiles = self.accounts.profiles()
+                if target:
+                    profiles = [profile for profile in profiles if profile["id"] == target]
+                    if not profiles: raise ValueError("Profile not found.")
+            else:
+                profiles = [{"id": user["id"], "username": user["username"], "role": user["role"]}]
+            grants = [{"profile_id": profile["id"], "username": profile["username"], "role": profile["role"],
+                       "services": list(CATALOG) if profile["role"] == "owner" else self.accounts.service_grants(profile["id"])}
+                      for profile in profiles]
+            return 200, {"grants": grants}, None
+        if route.startswith("/api/profiles/"):
+            parts = route.strip("/").split("/")
+            if len(parts) == 5 and parts[3] == "service-grants" and method in ("PUT", "DELETE"):
+                if user["role"] != "owner": raise PermissionError("Host owner access is required.")
+                profile_id, service = parts[2], parts[4]
+                if service not in CATALOG: raise ValueError("Unknown RISARMS service.")
+                if method == "PUT":
+                    self.accounts.grant_service(profile_id, service, user["id"])
+                else:
+                    self.accounts.revoke_service(profile_id, service)
+                self.accounts.audit(user["id"], "service_granted" if method == "PUT" else "service_revoked",
+                                    {"profile": profile_id, "service": service})
+                return 200, {"profile_id": profile_id, "service": service,
+                             "allowed": self.accounts.service_allowed(profile_id, service)}, None
         if route == "/api/services" and method == "GET":
             catalog = self.services.catalog()
-            return 200, {"pi_mode":bool(self.services.pi_policy),"services": catalog if user["role"] == "owner" else [x for x in catalog if x["id"] in ("asis","rescs")], "links": self.config["links"] if user["role"] == "owner" else {}}, None
+            grants = set(CATALOG) if user["role"] == "owner" else set(self.accounts.service_grants(user["id"]))
+            for row in catalog: row["allowed"] = row["id"] in grants
+            return 200, {"pi_mode":bool(self.services.pi_policy),"services": catalog, "links": self.config["links"] if user["role"] == "owner" else {}}, None
         if route=='/api/ai-status' and method=='GET':
             if user['role']!='owner':raise PermissionError('Host owner access is required.')
             policy=self.services.pi_policy
@@ -471,9 +503,12 @@ class Gateway:
                             raise PermissionError("Sign in before uploading files.")
                         length = int(self.headers.get("Content-Length", "0"))
                         maximum = 12*1024*1024 if urlparse(self.path).path == "/api/files" else MAX_BODY
-                        if not 0 < length <= maximum: raise ValueError("Request body exceeds this endpoint size limit.")
-                        body = json.loads(self.rfile.read(length))
-                        if not isinstance(body, dict): raise ValueError("Expected a JSON object.")
+                        if length > maximum: raise ValueError("Request body exceeds this endpoint size limit.")
+                        if length:
+                            body = json.loads(self.rfile.read(length))
+                            if not isinstance(body, dict): raise ValueError("Expected a JSON object.")
+                        elif self.command not in ("PUT", "DELETE"):
+                            raise ValueError("Request body exceeds this endpoint size limit.")
                     remote = self.client_address[0]
                     if remote == "127.0.0.1" and self.headers.get("Host") == urlparse(gateway.config["public_origin"]).netloc:
                         import ipaddress
@@ -489,6 +524,8 @@ class Gateway:
                 except Exception: self.reply(500, {"error": "The host could not complete this request."})
             do_GET = run_request
             do_POST = run_request
+            do_PUT = run_request
+            do_DELETE = run_request
         return Handler
 
     def close(self):

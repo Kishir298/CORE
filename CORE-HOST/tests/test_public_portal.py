@@ -21,7 +21,9 @@ def test_registration_requires_approval_and_members_have_only_messaging_storage(
     pending=admin.request('GET','/api/access')['requests'];assert len(pending)==1
     admin.request('POST','/api/access',{'user_id':pending[0]['id'],'action':'approve'})
     profile=visitor.login('visitor','visitor-password-123');assert profile['role']=='member'
-    assert {s['id'] for s in visitor.request('GET','/api/services')['services']}=={'asis','rescs'}
+    services={s['id']:s for s in visitor.request('GET','/api/services')['services']}
+    assert services['asis']['allowed'] is True
+    assert services['ascs']['allowed'] is False
     for endpoint in ['/api/settings','/api/profiles','/api/access','/api/audit']:
         with pytest.raises(RemoteError) as error:visitor.request('GET',endpoint)
         assert error.value.status==403

@@ -16,9 +16,9 @@ from pathlib import Path
 
 CATALOG = {
     "asis": ("A.S.I.S.", "Personal assistant", "ASIS"),
-    "ascs": ("A.S.C.S.", "Coding workspace · owner only", "ASCS"),
+    "ascs": ("A.S.C.S.", "Coding workspace · grant required", "ASCS"),
     "rescs": ("R.E.S.C.S.", "Profile records", "RESCS"),
-    "tiviss": ("T.I.V.I.S.S.", "Independent agent · owner only", "TIVISS"),
+    "tiviss": ("T.I.V.I.S.S.", "Independent agent · grant required", "TIVISS"),
     "rovert": ("R.O.V.E.R.T.", "Rover services · configure telemetry portal", "ROVERT"),
 }
 
@@ -50,18 +50,24 @@ class Job:
 
 
 class Services:
-    def __init__(self, data, roots, api_key, models=None):
+    def __init__(self, data, roots, api_key, models=None, access=None):
         self.data, self.roots, self.api_key = Path(data), roots, api_key
         self.models = models or {}
         self.profile_models = {}
         self.jobs = {}
         self.lock = threading.RLock()
         self.closed = False
+        self.access = access
         self.pi_slot=threading.Semaphore(1)
         self.pi_policy=None
         if os.environ.get('CORE_SAFE_CHAT')=='1':
             from core.pi_resources import PiPolicy
             self.pi_policy=PiPolicy(self.data)
+
+    def allowed(self, user, service):
+        if self.access is not None:
+            return bool(self.access(user["id"], service))
+        return user.get("role") == "owner" or service == "asis"
 
     def root(self, service):
         if service not in CATALOG: raise ValueError("Unknown RISARMS service.")
@@ -87,7 +93,7 @@ class Services:
         return result
 
     def command(self, service, user, prompt, mode):
-        if user["role"] != "owner" and service != "asis": raise PermissionError("This service requires the host owner.")
+        if not self.allowed(user, service): raise PermissionError("This service is not enabled for your profile.")
         if service not in ("asis", "ascs", "rescs", "tiviss"):
             raise ValueError("This service has no verified runnable web adapter. Configure its external URL instead.")
         if self.pi_policy and service=='ascs' and mode!='plan':raise ValueError('Pi ASCS is code generation only. Choose Plan mode; Build/Auto execution is unavailable.')
@@ -150,6 +156,7 @@ class Services:
         return argv, root, env
 
     def start(self, service, user, prompt="", mode="plan", persist=True):
+        if not self.allowed(user, service): raise PermissionError("This service is not enabled for your profile.")
         if not isinstance(persist,bool): raise ValueError("persist must be true or false.")
         if not isinstance(prompt, str) or len(prompt) > 32000 or (service != "rescs" and not prompt.strip()):
             raise ValueError("Enter a message of 1–32000 characters.")

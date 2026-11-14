@@ -13,6 +13,8 @@ import time
 import uuid
 from pathlib import Path
 
+DEFAULT_MEMBER_GRANTS = ("asis",)
+
 
 class Accounts:
     def __init__(self, directory: Path):
@@ -21,6 +23,9 @@ class Accounts:
         self.lock = threading.RLock()
         self.db = sqlite3.connect(self.path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
+        grants_existed = self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='service_grants'"
+        ).fetchone() is not None
         self.db.executescript('''
         PRAGMA foreign_keys=ON;
         CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT UNIQUE,
@@ -33,10 +38,19 @@ class Accounts:
           name TEXT, device_type TEXT, platform TEXT, digest TEXT, created REAL,
           last_seen REAL, expires REAL, revoked INTEGER NOT NULL DEFAULT 0);
         CREATE INDEX IF NOT EXISTS devices_user ON devices(user_id);
+        CREATE TABLE IF NOT EXISTS service_grants(user_id TEXT REFERENCES users(id),
+          service TEXT NOT NULL, created REAL, granted_by TEXT, PRIMARY KEY(user_id, service));
+        CREATE INDEX IF NOT EXISTS service_grants_user ON service_grants(user_id);
         ''')
         self.db.execute("CREATE TABLE IF NOT EXISTS password_changes(user_id TEXT PRIMARY KEY REFERENCES users(id), required INTEGER NOT NULL)")
         if 'admin_until' not in [r[1] for r in self.db.execute("PRAGMA table_info(sessions)")]:
             self.db.execute("ALTER TABLE sessions ADD COLUMN admin_until REAL NOT NULL DEFAULT 0")
+        if not grants_existed:
+            now = time.time()
+            for user_id, in self.db.execute("SELECT id FROM users WHERE role IN ('pending','member')"):
+                for service in DEFAULT_MEMBER_GRANTS:
+                    self.db.execute("INSERT OR IGNORE INTO service_grants(user_id,service,created) VALUES(?,?,?)",
+                                    (user_id, service, now))
         self.db.commit()
         if os.name == "posix": self.path.chmod(0o600)
 
@@ -104,6 +118,10 @@ class Accounts:
                     user_id = uuid.uuid4().hex
                     self.db.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?)",
                                     (user_id, username.lower(), name.strip(), "owner" if first else "pending" if pending else "member", salt, digest, time.time()))
+                    if not first:
+                        for service in DEFAULT_MEMBER_GRANTS:
+                            self.db.execute("INSERT INTO service_grants(user_id,service,created) VALUES(?,?,?)",
+                                            (user_id, service, time.time()))
             except sqlite3.IntegrityError as exc:
                 raise ValueError("Username already exists.") from exc
             return self.public(self.db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
@@ -248,6 +266,48 @@ class Accounts:
             row=self.db.execute("SELECT id FROM users WHERE username=? AND role IN ('owner','member')",(username.lower(),)).fetchone()
             if row is None:raise ValueError("Account is unavailable.")
             return row[0]
+
+    def service_grants(self, user_id=None):
+        """Return stored explicit grants; owners always have every service."""
+        with self.lock:
+            if user_id:
+                return [row[0] for row in self.db.execute(
+                    "SELECT service FROM service_grants WHERE user_id=? ORDER BY service", (user_id,))]
+            result = {}
+            for row in self.db.execute("SELECT user_id,service FROM service_grants ORDER BY user_id,service"):
+                result.setdefault(row[0], []).append(row[1])
+            return result
+
+    def service_allowed(self, user_id, service):
+        if not isinstance(service, str) or not service:
+            return False
+        with self.lock:
+            row = self.db.execute("SELECT role FROM users WHERE id=?", (user_id,)).fetchone()
+            if row is None:
+                return False
+            if row["role"] == "owner":
+                return True
+            return self.db.execute("SELECT 1 FROM service_grants WHERE user_id=? AND service=?",
+                                   (user_id, service)).fetchone() is not None
+
+    def grant_service(self, user_id, service, granted_by=None):
+        if not isinstance(service, str) or not service:
+            raise ValueError("A service ID is required.")
+        with self.lock, self.db:
+            if self.db.execute("SELECT 1 FROM users WHERE id=?", (user_id,)).fetchone() is None:
+                raise ValueError("Profile not found.")
+            self.db.execute("INSERT OR IGNORE INTO service_grants(user_id,service,created,granted_by) VALUES(?,?,?,?)",
+                            (user_id, service, time.time(), granted_by))
+        return self.service_grants(user_id)
+
+    def revoke_service(self, user_id, service):
+        if not isinstance(service, str) or not service:
+            raise ValueError("A service ID is required.")
+        with self.lock, self.db:
+            if self.db.execute("SELECT 1 FROM users WHERE id=?", (user_id,)).fetchone() is None:
+                raise ValueError("Profile not found.")
+            self.db.execute("DELETE FROM service_grants WHERE user_id=? AND service=?", (user_id, service))
+        return self.service_grants(user_id)
 
     def logout(self, token):
         with self.lock, self.db:
