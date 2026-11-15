@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -41,7 +42,8 @@ def test_first_run_writes_one_key_to_rescs_and_both_gateways(tmp_path):
     assert canonical["public_origin"] == loaded["public_origin"] == "https://core.example.test"
     assert canonical["rescs_url"] == loaded["rescs_url"] == "http://127.0.0.1:8081"
     assert (base / "gateway.json").read_bytes() == (data / "core" / "gateway.json").read_bytes()
-    assert stat.S_IMODE((data / "core" / "gateway.json").stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE((data / "core" / "gateway.json").stat().st_mode) == 0o600
 
 
 @pytest.mark.parametrize(
