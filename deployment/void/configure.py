@@ -1,19 +1,81 @@
-"""Create RISARMS Void Linux configuration once; never overwrite existing keys."""
+"""Create RISARMS Void Linux configuration once; never overwrite existing keys.
+
+``/etc/risarms/gateway.json`` is the operator-facing source of truth. CORE reads
+``{data}/core/gateway.json``, so both files are written from the single key in
+``rescs.env`` during first-time configuration. Existing files are never rotated.
+"""
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import secrets
 from pathlib import Path
 
 
+def _exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _write_new(path: Path, text: str) -> None:
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise SystemExit(f"Refusing to overwrite {path}; reconcile manually.") from exc
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    path.chmod(0o600)
+
+
+def _rescs_key(base: Path) -> str:
+    path = base / "rescs.env"
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as exc:
+        raise SystemExit(f"Cannot read {path}; reconcile manually.") from exc
+    for line in lines:
+        name, separator, value = line.partition("=")
+        if separator and name == "RESCS_API_KEY" and value:
+            return value
+    raise SystemExit(f"RESCS_API_KEY is missing from {path}; reconcile manually.")
+
+
+def reconcile(base: Path, data: Path) -> None:
+    """Verify existing keys; adopt the canonical gateway only when it is absent."""
+    base, data = Path(base), Path(data)
+    key = _rescs_key(base)
+    canonical = base / "gateway.json"
+    loaded = data / "core" / "gateway.json"
+    try:
+        canonical_text = canonical.read_text()
+        canonical_config = json.loads(canonical_text)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"Cannot read {canonical}; reconcile manually.") from exc
+    if not isinstance(canonical_config, dict) or canonical_config.get("rescs_key") != key:
+        raise SystemExit(f"{canonical} does not match {base / 'rescs.env'}; reconcile manually.")
+    if _exists(loaded):
+        try:
+            loaded_config = json.loads(loaded.read_text())
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"Cannot read {loaded}; reconcile manually.") from exc
+        if not isinstance(loaded_config, dict) or loaded_config.get("rescs_key") != key:
+            raise SystemExit(f"{loaded} does not match {base / 'rescs.env'}; reconcile manually.")
+        return
+    loaded.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _write_new(loaded, canonical_text)
+
+
 def configure(base: Path, data: Path, origin: str) -> None:
     base, data = Path(base), Path(data)
-    for name in ("core.env", "rescs.env", "gateway.json"):
-        if (base / name).exists():
-            raise SystemExit(f"Refusing to overwrite {base / name}; reconcile manually.")
+    data_gateway = data / "core" / "gateway.json"
+    targets = [base / name for name in ("core.env", "rescs.env", "gateway.json")]
+    targets.append(data_gateway)
+    for path in targets:
+        if _exists(path):
+            raise SystemExit(f"Refusing to overwrite {path}; reconcile manually.")
     key = secrets.token_urlsafe(48)
     base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    data_gateway.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     core = f"""CORE_WEB_DATA={data}/core
 CORE_PUBLIC_ORIGIN={origin}
 CORE_EXTERNAL_STORAGE=1
@@ -39,17 +101,18 @@ RESCS_RATE_LIMIT_WRITES_PER_MINUTE=120
 RESCS_RATE_LIMIT_UPLOADS_PER_MINUTE=30
 TMPDIR={data}/rescs/tmp
 """
-    for name, text in (("core.env", core), ("rescs.env", rescs)):
-        path = base / name
-        path.write_text(text)
-        path.chmod(0o600)
-    gateway = base / "gateway.json"
-    gateway.write_text(json.dumps({
+    gateway = json.dumps({
         "rescs_url": "http://127.0.0.1:8081",
         "rescs_key": key,
         "public_origin": origin,
-    }, indent=2) + "\n")
-    gateway.chmod(0o600)
+    }, indent=2) + "\n"
+    for path, text in (
+        (base / "core.env", core),
+        (base / "rescs.env", rescs),
+        (base / "gateway.json", gateway),
+        (data_gateway, gateway),
+    ):
+        _write_new(path, text)
 
 
 if __name__ == "__main__":
@@ -57,5 +120,10 @@ if __name__ == "__main__":
     parser.add_argument("--base", default="/etc/risarms")
     parser.add_argument("--data", default="/var/lib/risarms")
     parser.add_argument("--origin", default="https://core.local")
+    parser.add_argument("--reconcile", action="store_true",
+                        help="verify existing configuration or adopt a missing CORE gateway")
     args = parser.parse_args()
-    configure(args.base, args.data, args.origin)
+    if args.reconcile:
+        reconcile(args.base, args.data)
+    else:
+        configure(args.base, args.data, args.origin)

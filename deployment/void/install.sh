@@ -27,9 +27,12 @@ if [[ ! -f /etc/risarms/core.env && ! -f /etc/risarms/rescs.env ]]; then
 elif [[ ! -f /etc/risarms/core.env || ! -f /etc/risarms/rescs.env ]]; then
     echo 'Only one environment file exists; repair configuration without regenerating keys.' >&2
     exit 1
+else
+    python3 "$SOURCE/deployment/void/configure.py" --reconcile
 fi
 chown -R risarms:risarms /var/lib/risarms/core /var/lib/risarms/rescs /var/log/risarms
-chmod 0600 /etc/risarms/*.env /etc/risarms/gateway.json
+chown risarms:risarms /var/lib/risarms/core/gateway.json
+chmod 0600 /etc/risarms/*.env /etc/risarms/gateway.json /var/lib/risarms/core/gateway.json
 install -d -m 0755 /etc/sv/risarms-core/log /etc/sv/risarms-rescs/log
 install -m 0755 "$SOURCE/deployment/void/etc/sv/risarms-core/run" /etc/sv/risarms-core/run
 install -m 0755 "$SOURCE/deployment/void/etc/sv/risarms-core/log/run" /etc/sv/risarms-core/log/run
@@ -37,12 +40,15 @@ install -m 0755 "$SOURCE/deployment/void/etc/sv/risarms-rescs/run" /etc/sv/risar
 install -m 0755 "$SOURCE/deployment/void/etc/sv/risarms-rescs/log/run" /etc/sv/risarms-rescs/log/run
 install -d -m 0755 /etc/caddy/risarms
 install -m 0644 "$SOURCE/deployment/void/etc/caddy/portal.caddy" /etc/caddy/risarms/portal.caddy
-if [[ -f /etc/caddy/Caddyfile ]] && ! grep -qxF 'import /etc/caddy/risarms/*.caddy' /etc/caddy/Caddyfile; then
+if [[ ! -f /etc/caddy/Caddyfile ]]; then
+    echo 'import /etc/caddy/risarms/*.caddy' > /etc/caddy/Caddyfile
+elif ! grep -qxF 'import /etc/caddy/risarms/*.caddy' /etc/caddy/Caddyfile; then
     cp -a /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.before-risarms-$(date +%s)"
     echo 'import /etc/caddy/risarms/*.caddy' >> /etc/caddy/Caddyfile
 fi
 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-install -m 0644 "$SOURCE/deployment/void/etc/nftables.d/risarms.nft" /etc/nftables.d/risarms.nft 2>/dev/null || true
+install -d -m 0755 /etc/nftables.d
+install -m 0644 "$SOURCE/deployment/void/etc/nftables.d/risarms.nft" /etc/nftables.d/risarms.nft
 install -d -m 0755 /etc/elogind/logind.conf.d
 install -m 0644 "$SOURCE/deployment/void/etc/elogind/logind.conf.d/risarms.conf" /etc/elogind/logind.conf.d/risarms.conf
 install -m 0755 "$SOURCE/deployment/void/backup.sh" /usr/local/sbin/risarms-backup
