@@ -1,0 +1,7 @@
+#!/bin/sh
+exec 2>&1
+set -a
+. /etc/risarms/rescs.env
+set +a
+cd /var/lib/risarms/rescs || exit 1
+exec chpst -u risarms:risarms /opt/risarms/rescs-venv/bin/rescs serve --host 127.0.0.1 --port 8081

@@ -1,0 +1,43 @@
+# RISARMS C.O.R.E. portal. Keep the origin identical to CORE_PUBLIC_ORIGIN.
+https://core.local {
+    tls internal
+    encode gzip
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    }
+    handle /api/ws {
+        reverse_proxy 127.0.0.1:8781 {
+            header_up X-Forwarded-For {remote_host}
+            transport http {
+                dial_timeout 2s
+                response_header_timeout 15s
+            }
+        }
+    }
+    handle /api/* {
+        reverse_proxy 127.0.0.1:8780 {
+            header_up X-Forwarded-For {remote_host}
+            transport http {
+                dial_timeout 2s
+                response_header_timeout 15s
+            }
+        }
+    }
+    handle {
+        root * /var/lib/risarms/frontend
+        file_server
+    }
+    handle_errors {
+        @api path /api/*
+        handle @api {
+            header Content-Type application/json
+            respond `{"error":"CORE or RESCS is unavailable. Check the Void services."}` 503
+        }
+        handle {
+            respond "RISARMS portal is unavailable." 503
+        }
+    }
+}

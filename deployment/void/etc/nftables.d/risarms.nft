@@ -1,0 +1,14 @@
+# Include from /etc/nftables.conf. Expose only Caddy; services bind loopback.
+table inet risarms {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        ct state established,related accept
+        iif lo accept
+        ip protocol icmp accept
+        ip6 nexthdr ipv6-icmp accept
+        tcp dport 443 accept
+        tcp dport 22 accept
+        udp dport 5353 accept
+        tcp dport 5353 accept
+    }
+}
