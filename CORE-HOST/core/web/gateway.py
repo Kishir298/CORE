@@ -318,30 +318,32 @@ class Gateway:
                 item = self.accounts.decide_owner_action(item["id"], user["id"], "rejected")
                 self.accounts.audit(user["id"], "owner_action_rejected", {"action": item["id"]})
                 return 200, {"action": item}, None
-            payload = item["payload"]
-            try:
-                if item["action"] in ("service_grant", "service_revoke"):
-                    profile_id, service = payload.get("profile_id"), payload.get("service")
-                    if service not in CATALOG:
-                        raise ValueError("Unknown RISARMS service.")
-                    if not any(profile["id"] == profile_id for profile in self.accounts.profiles()):
-                        raise ValueError("Profile not found.")
-                    if item["action"] == "service_grant":
-                        self.accounts.grant_service(profile_id, service, user["id"])
+            with self.accounts.owner_apply_lock:
+                item = self.accounts.claim_owner_action(item["id"], user["id"])
+                payload = item["payload"]
+                try:
+                    if item["action"] in ("service_grant", "service_revoke"):
+                        profile_id, service = payload.get("profile_id"), payload.get("service")
+                        if service not in CATALOG:
+                            raise ValueError("Unknown RISARMS service.")
+                        if not any(profile["id"] == profile_id for profile in self.accounts.profiles()):
+                            raise ValueError("Profile not found.")
+                        if item["action"] == "service_grant":
+                            self.accounts.grant_service(profile_id, service, user["id"])
+                        else:
+                            self.accounts.revoke_service(profile_id, service)
+                    elif item["action"] == "quota_set":
+                        target = self.accounts.account_id(payload.get("username"))
+                        self.library.set_quota(target, int(payload.get("bytes")))
                     else:
-                        self.accounts.revoke_service(profile_id, service)
-                elif item["action"] == "quota_set":
-                    target = self.accounts.account_id(payload.get("username"))
-                    self.library.set_quota(target, int(payload.get("bytes")))
-                else:
-                    raise ValueError("Unsupported owner action.")
-            except (TypeError, ValueError) as exc:
-                item = self.accounts.decide_owner_action(item["id"], user["id"], "failed", str(exc))
-                self.accounts.audit(user["id"], "owner_action_failed", {"action": item["id"]})
-                raise
-            item = self.accounts.decide_owner_action(item["id"], user["id"], "approved")
-            self.accounts.audit(user["id"], "owner_action_approved", {"action": item["id"], "kind": item["action"]})
-            return 200, {"action": item}, None
+                        raise ValueError("Unsupported owner action.")
+                except (TypeError, ValueError) as exc:
+                    item = self.accounts.decide_owner_action(item["id"], user["id"], "failed", str(exc))
+                    self.accounts.audit(user["id"], "owner_action_failed", {"action": item["id"]})
+                    raise
+                item = self.accounts.decide_owner_action(item["id"], user["id"], "approved")
+                self.accounts.audit(user["id"], "owner_action_approved", {"action": item["id"], "kind": item["action"]})
+                return 200, {"action": item}, None
         if route == "/api/services" and method == "GET":
             catalog = self.services.catalog()
             grants = set(CATALOG) if user["role"] == "owner" else set(self.accounts.service_grants(user["id"]))

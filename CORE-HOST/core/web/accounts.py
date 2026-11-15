@@ -21,6 +21,7 @@ class Accounts:
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / "accounts.sqlite3"
         self.lock = threading.RLock()
+        self.owner_apply_lock = threading.Lock()
         self.db = sqlite3.connect(self.path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         grants_existed = self.db.execute(
@@ -349,6 +350,25 @@ class Accounts:
         with self.lock:
             return [self._owner_action(row) for row in self.db.execute(query, params)]
 
+    def claim_owner_action(self, action_id, owner_id):
+        """Claim a pending action for application, or resume the same owner's claim."""
+        with self.lock, self.db:
+            row = self.db.execute("SELECT * FROM owner_actions WHERE id=?", (action_id,)).fetchone()
+            if row is None:
+                raise ValueError("Owner action not found.")
+            if row["status"] == "pending":
+                self.db.execute(
+                    "UPDATE owner_actions SET status='applying',decided_by=?,decided_at=?,error='' WHERE id=?",
+                    (owner_id, time.time(), action_id),
+                )
+            elif row["status"] == "applying" and row["decided_by"] == owner_id:
+                pass
+            elif row["status"] == "applying":
+                raise ValueError("This owner action is being applied by another owner.")
+            else:
+                raise ValueError("This owner action was already decided.")
+        return self.owner_action(action_id)
+
     def decide_owner_action(self, action_id, owner_id, status, error=""):
         if status not in ("approved", "rejected", "failed"):
             raise ValueError("Invalid owner action decision.")
@@ -356,8 +376,10 @@ class Accounts:
             row = self.db.execute("SELECT * FROM owner_actions WHERE id=?", (action_id,)).fetchone()
             if row is None:
                 raise ValueError("Owner action not found.")
-            if row["status"] != "pending":
+            if row["status"] not in ("pending", "applying"):
                 raise ValueError("This owner action was already decided.")
+            if status == "rejected" and row["status"] == "applying":
+                raise ValueError("This owner action is already being applied.")
             self.db.execute(
                 "UPDATE owner_actions SET status=?,decided_by=?,decided_at=?,error=? WHERE id=?",
                 (status, owner_id, time.time(), str(error)[:500], action_id),
