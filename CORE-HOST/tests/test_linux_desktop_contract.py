@@ -33,7 +33,7 @@ except ImportError:
                 with self.opener.open(request,timeout=5) as response:return json.loads(response.read())
             except HTTPError as error:raise RemoteError(json.loads(error.read())["error"],error.code) from error
         def login(self,username,password):
-            result=self.request("POST","/api/login",{"username":username,"password":password});self.csrf=result["csrf"];return result["profile"]
+            result=self.request("POST","/api/login",{"username":username,"password":password,"remember_device":True});self.csrf=result["csrf"];return result["profile"]
         def close(self):
             if self.csrf:
                 try:self.request("POST","/api/logout")

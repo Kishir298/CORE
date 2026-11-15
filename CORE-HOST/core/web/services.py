@@ -89,7 +89,7 @@ class Services:
                 if row['id'] in ('asis','ascs'):
                     row.update(installed_source=True,execution_mode='Tool-free assistance' if row['id']=='asis' else 'Code generation only; no repository tools')
                 elif row['id']=='tiviss':row.update(enabled=False,execution_mode='Execution disabled on this Pi profile')
-                elif row['id']=='rescs':row.update(installed_source=True,execution_mode='Private SSD service managed by systemd')
+                elif row['id']=='rescs':row.update(installed_source=True,execution_mode='Private storage service managed by the host init system')
         return result
 
     def command(self, service, user, prompt, mode):
@@ -110,7 +110,7 @@ class Services:
             env.update(PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", PYTHONPATH=str(Path(__file__).resolve().parents[2]))
             return [sys.executable,"-u","-m","core.web.chat_worker","--profile-dir",str(home),"--model",models[service]]+(["--message-stdin"] if self.pi_policy else ["--message="+prompt])+(["--coding"] if service=="ascs" else []), home, env
         if service=='rescs' and os.environ.get('CORE_EXTERNAL_STORAGE')=='1':
-            raise ValueError('RESCS is managed separately by systemd. Use systemctl status risarms-rescs.')
+            raise ValueError('RESCS is managed separately by the host service manager. Check the risarms-rescs service.')
         root = self.root(service)
         marker = {"asis": "asis", "ascs": "agent", "rescs": "src/rescs", "tiviss":"tiviss"}[service]
         if not (root / marker).is_dir(): raise ValueError(f"{CATALOG[service][2]} source was not found. Set its path in Settings.")

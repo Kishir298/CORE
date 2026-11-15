@@ -131,3 +131,11 @@ old-versions/
 SHA256SUMS
 sbom.cdx.json
 release/
+
+# Signing keys, release credentials and local secret stores
+.secrets/
+secrets/
+*.ed25519
+*.priv
+private-key*
+release-keys/

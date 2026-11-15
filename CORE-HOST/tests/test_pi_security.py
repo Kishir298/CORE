@@ -22,7 +22,7 @@ def portal(tmp_path):
 
 
 def auth(g,name):
-    _,body,cookie=g.dispatch('POST','/api/login',{'username':name,'password':PW},{})
+    _,body,cookie=g.dispatch('POST','/api/login',{'username':name,'password':PW,'remember_device':True},{})
     return {'Cookie':cookie.split(';')[0],'X-Core-CSRF':body['csrf']}
 
 
@@ -98,3 +98,37 @@ def test_readiness_and_quota_admin(portal):
     g.dispatch('POST','/api/quotas',{'username':'alice','bytes':1024**3},h)
     assert g.library.quota(alice['id'])==1024**3
     with pytest.raises(ValueError):g.dispatch('POST','/api/quotas',{'username':'alice','bytes':1},h)
+
+
+def test_owner_admin_requires_a_registered_device(portal):
+    g,owner,_,_=portal
+    _, body, cookie = g.dispatch('POST','/api/login',{'username':'owner','password':PW},{})
+    headers={'Cookie':cookie.split(';')[0],'X-Core-CSRF':body['csrf']}
+    with pytest.raises(PermissionError,match='registered owner device'):
+        g.dispatch('POST','/api/reauth',{'password':PW},headers)
+    with pytest.raises(PermissionError,match='Re-enter'):
+        g.dispatch('GET','/api/settings',{},headers)
+
+
+def test_owner_device_binding_and_revocation(portal):
+    g,owner,_,_=portal
+    headers=auth(g,'owner')
+    token=headers['Cookie'].split('=',1)[1]
+    session=g.accounts.session(token)
+    assert session['device_id']
+    g.dispatch('POST','/api/reauth',{'password':PW},headers)
+    assert g.dispatch('GET','/api/settings',{},headers)[0]==200
+    device=g.accounts.devices(owner['id'])[0]
+    g.dispatch('POST','/api/devices/'+device['device_id']+'/revoke',{},headers)
+    assert g.accounts.session(token) is None
+    with pytest.raises(PermissionError):g.dispatch('GET','/api/me',{},headers)
+
+
+def test_service_grant_mutation_requires_admin_unlock(portal):
+    g,owner,alice,_=portal
+    headers=auth(g,'owner')
+    route='/api/profiles/'+alice['id']+'/service-grants/ascs'
+    with pytest.raises(PermissionError,match='Re-enter'):
+        g.dispatch('PUT',route,{},headers)
+    g.dispatch('POST','/api/reauth',{'password':PW},headers)
+    assert g.dispatch('PUT',route,{},headers)[0]==200

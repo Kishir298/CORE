@@ -115,7 +115,7 @@ class Gateway:
                 "capabilities": [
                     "conditional_records_v1", "folders_sharing_trash_v1", "admin_reauth_v1",
                     "ws_ticket_v1", "session_renewal_v1", "device_credentials_v1",
-                    "device_management_v1", "job_idempotency_v1", "messaging_v1",
+                    "device_management_v1", "owner_device_binding_v1", "owner_action_queue_v1", "job_idempotency_v1", "messaging_v1",
                 ],
             }, None
         if method == 'GET' and route == '/api/ready':
@@ -155,6 +155,7 @@ class Gateway:
                     user["id"], body.get("device_name"), body.get("device_type", "desktop"),
                     body.get("platform", ""),
                 )
+                self.accounts.bind_session(session, device["device_id"])
                 result["device_credential"] = device["credential"]
                 result["device"] = {key: device[key] for key in ("device_id", "device_name", "device_type", "platform")}
             self.accounts.audit(user["id"], "login")
@@ -166,7 +167,7 @@ class Gateway:
                 if len(attempts) >= 8: raise PermissionError("Too many attempts. Try again in 15 minutes.")
                 attempts.append(time.time())
             row = self.accounts.device_login(body.get("credential"))
-            session, csrf, user = self.accounts.issue_session(row)
+            session, csrf, user = self.accounts.issue_session(row, row["id"])
             with self.lock: self.device_attempts[remote].clear()
             self.accounts.audit(user["id"], "device_login")
             return 200, {"profile": user, "csrf": csrf}, self.cookie(session, public)
@@ -245,7 +246,7 @@ class Gateway:
                 attempts.clear()
             self.accounts.audit(user['id'],'admin_unlocked')
             return 200, {'unlocked_seconds':300}, None
-        if route in ('/api/settings','/api/access','/api/profiles','/api/audit','/api/quotas') or (route=='/api/jobs' and method=='POST' and body.get('service')=='rescs'):
+        if route in ('/api/settings','/api/access','/api/profiles','/api/audit','/api/quotas') or (route=='/api/jobs' and method=='POST' and body.get('service')=='rescs') or (route.startswith('/api/service-grants') and method!='GET') or (route.startswith('/api/profiles/') and '/service-grants/' in route and method in ('PUT','DELETE')) or (route.startswith('/api/owner-actions/') and method=='POST'):
             if user['role']!='owner':raise PermissionError("Host owner access is required.")
             if user.get('admin_until',0)<=time.time():raise PermissionError("Re-enter your password to unlock administration for five minutes.")
         if route=='/api/quotas':
@@ -294,6 +295,53 @@ class Gateway:
                                     {"profile": profile_id, "service": service})
                 return 200, {"profile_id": profile_id, "service": service,
                              "allowed": self.accounts.service_allowed(profile_id, service)}, None
+        if route == "/api/owner-actions":
+            if method == "POST":
+                item = self.accounts.request_owner_action(
+                    user["id"], body.get("action"), body.get("payload") or {},
+                )
+                self.accounts.audit(user["id"], "owner_action_requested", {"action": item["id"], "kind": item["action"]})
+                return 202, {"action": item}, None
+            if method == "GET":
+                if user["role"] != "owner":
+                    raise PermissionError("Host owner access is required.")
+                status = (query.get("status") or ["pending"])[0]
+                return 200, {"actions": self.accounts.owner_actions(status=status)}, None
+        if route == "/api/owner-actions/mine" and method == "GET":
+            return 200, {"actions": self.accounts.owner_actions(requested_by=user["id"])}, None
+        if route.startswith("/api/owner-actions/"):
+            parts = route.strip("/").split("/")
+            if len(parts) != 4 or parts[3] not in ("approve", "reject") or method != "POST":
+                raise ValueError("Invalid owner action route.")
+            item = self.accounts.owner_action(parts[2])
+            if parts[3] == "reject":
+                item = self.accounts.decide_owner_action(item["id"], user["id"], "rejected")
+                self.accounts.audit(user["id"], "owner_action_rejected", {"action": item["id"]})
+                return 200, {"action": item}, None
+            payload = item["payload"]
+            try:
+                if item["action"] in ("service_grant", "service_revoke"):
+                    profile_id, service = payload.get("profile_id"), payload.get("service")
+                    if service not in CATALOG:
+                        raise ValueError("Unknown RISARMS service.")
+                    if not any(profile["id"] == profile_id for profile in self.accounts.profiles()):
+                        raise ValueError("Profile not found.")
+                    if item["action"] == "service_grant":
+                        self.accounts.grant_service(profile_id, service, user["id"])
+                    else:
+                        self.accounts.revoke_service(profile_id, service)
+                elif item["action"] == "quota_set":
+                    target = self.accounts.account_id(payload.get("username"))
+                    self.library.set_quota(target, int(payload.get("bytes")))
+                else:
+                    raise ValueError("Unsupported owner action.")
+            except (TypeError, ValueError) as exc:
+                item = self.accounts.decide_owner_action(item["id"], user["id"], "failed", str(exc))
+                self.accounts.audit(user["id"], "owner_action_failed", {"action": item["id"]})
+                raise
+            item = self.accounts.decide_owner_action(item["id"], user["id"], "approved")
+            self.accounts.audit(user["id"], "owner_action_approved", {"action": item["id"], "kind": item["action"]})
+            return 200, {"action": item}, None
         if route == "/api/services" and method == "GET":
             catalog = self.services.catalog()
             grants = set(CATALOG) if user["role"] == "owner" else set(self.accounts.service_grants(user["id"]))

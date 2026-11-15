@@ -41,10 +41,16 @@ class Accounts:
         CREATE TABLE IF NOT EXISTS service_grants(user_id TEXT REFERENCES users(id),
           service TEXT NOT NULL, created REAL, granted_by TEXT, PRIMARY KEY(user_id, service));
         CREATE INDEX IF NOT EXISTS service_grants_user ON service_grants(user_id);
+        CREATE TABLE IF NOT EXISTS owner_actions(id TEXT PRIMARY KEY,
+          requested_by TEXT REFERENCES users(id), action TEXT NOT NULL, payload TEXT NOT NULL,
+          status TEXT NOT NULL, created REAL, decided_by TEXT, decided_at REAL, error TEXT);
+        CREATE INDEX IF NOT EXISTS owner_actions_status ON owner_actions(status, created);
         ''')
         self.db.execute("CREATE TABLE IF NOT EXISTS password_changes(user_id TEXT PRIMARY KEY REFERENCES users(id), required INTEGER NOT NULL)")
         if 'admin_until' not in [r[1] for r in self.db.execute("PRAGMA table_info(sessions)")]:
             self.db.execute("ALTER TABLE sessions ADD COLUMN admin_until REAL NOT NULL DEFAULT 0")
+        if 'device_id' not in [r[1] for r in self.db.execute("PRAGMA table_info(sessions)")]:
+            self.db.execute("ALTER TABLE sessions ADD COLUMN device_id TEXT NOT NULL DEFAULT ''")
         if not grants_existed:
             now = time.time()
             for user_id, in self.db.execute("SELECT id FROM users WHERE role IN ('pending','member')"):
@@ -139,33 +145,55 @@ class Accounts:
                 raise PermissionError("Your access request is pending approval or was rejected. Contact the portal owner.")
             return self.issue_session(row)
 
-    def issue_session(self, row):
-        """Create a fresh 12-hour session for an already authenticated user row."""
+    def issue_session(self, row, device_id=""):
+        """Create a fresh 12-hour session bound to an optional registered device."""
         with self.lock:
             token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
             with self.db:
                 self.db.execute("DELETE FROM sessions WHERE expires<?", (time.time(),))
-                self.db.execute("INSERT INTO sessions(token,user_id,csrf,expires) VALUES(?,?,?,?)",
-                                (hashlib.sha256(token.encode()).hexdigest(), row["id"], csrf, time.time()+43200))
+                self.db.execute("INSERT INTO sessions(token,user_id,csrf,expires,device_id) VALUES(?,?,?,?,?)",
+                                (hashlib.sha256(token.encode()).hexdigest(), row["id"], csrf, time.time()+43200, device_id or ""))
             return token, csrf, self.public(row)
+
+    def bind_session(self, token, device_id):
+        """Attach a newly issued session to an active device owned by the same user."""
+        if not isinstance(token, str) or not isinstance(device_id, str):
+            raise PermissionError("Session could not be bound to this device.")
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        with self.lock, self.db:
+            row = self.db.execute(
+                "SELECT sessions.user_id,devices.user_id AS device_user FROM sessions "
+                "JOIN devices ON devices.id=? WHERE sessions.token=? AND sessions.expires>? "
+                "AND devices.revoked=0 AND devices.expires>?",
+                (device_id, digest, time.time(), time.time()),
+            ).fetchone()
+            if row is None or row["user_id"] != row["device_user"]:
+                raise PermissionError("Session could not be bound to this device.")
+            self.db.execute("UPDATE sessions SET device_id=? WHERE token=?", (device_id, digest))
 
     def session(self, token):
         if not isinstance(token, str): return None
         digest = hashlib.sha256(token.encode()).hexdigest()
         with self.lock:
-            row = self.db.execute("SELECT users.*,sessions.csrf,sessions.admin_until FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>? AND users.role IN ('owner','member')",
+            row = self.db.execute("SELECT users.*,sessions.csrf,sessions.admin_until,sessions.device_id FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>? AND users.role IN ('owner','member')",
                                   (digest, time.time())).fetchone()
             if not row: return None
-            return {**self.public(row), "csrf": row["csrf"], "admin_until": row["admin_until"]}
+            return {**self.public(row), "csrf": row["csrf"], "admin_until": row["admin_until"], "device_id": row["device_id"]}
 
     def reauthenticate(self, token, password):
         if not isinstance(password,str) or len(password)>256:
             raise PermissionError("Password verification failed.")
         digest=hashlib.sha256(token.encode()).hexdigest()
         with self.lock,self.db:
-            row=self.db.execute("SELECT users.* FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>? AND role='owner'",(digest,time.time())).fetchone()
+            row=self.db.execute("SELECT users.*,sessions.device_id FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>? AND role='owner'",(digest,time.time())).fetchone()
             if row is None or not hmac.compare_digest(self._hash(password,row['salt']),row['digest']):
                 raise PermissionError("Password verification failed.")
+            if not row["device_id"]:
+                raise PermissionError("Sign in from a registered owner device before unlocking administration.")
+            device=self.db.execute("SELECT 1 FROM devices WHERE id=? AND user_id=? AND revoked=0 AND expires>?",
+                                  (row["device_id"],row["id"],time.time())).fetchone()
+            if device is None:
+                raise PermissionError("Sign in from a registered owner device before unlocking administration.")
             self.db.execute("UPDATE sessions SET admin_until=? WHERE token=?",(time.time()+300,digest))
 
     def renew_session(self, token, seconds=43200):
@@ -251,14 +279,90 @@ class Accounts:
             if row is None or (user_id and row["user_id"] != user_id):
                 raise ValueError("Device not found.")
             self.db.execute("UPDATE devices SET revoked=1 WHERE id=?", (device_id,))
+            self.db.execute("DELETE FROM sessions WHERE device_id=?", (device_id,))
             return row["user_id"]
 
     def revoke_user_devices(self, user_id, except_id=""):
         with self.lock, self.db:
             if except_id:
                 self.db.execute("UPDATE devices SET revoked=1 WHERE user_id=? AND id<>?", (user_id, except_id))
+                self.db.execute("DELETE FROM sessions WHERE user_id=? AND device_id<>?", (user_id, except_id))
             else:
                 self.db.execute("UPDATE devices SET revoked=1 WHERE user_id=?", (user_id,))
+                self.db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+
+    def request_owner_action(self, user_id, action, payload):
+        """Queue a privileged request; it is never applied without owner approval."""
+        if action not in ("service_grant", "service_revoke", "quota_set"):
+            raise ValueError("Unsupported owner action.")
+        if not isinstance(payload, dict):
+            raise ValueError("Owner action payload is invalid.")
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        if len(encoded) > 8192:
+            raise ValueError("Owner action payload is too large.")
+        with self.lock, self.db:
+            if self.db.execute("SELECT 1 FROM users WHERE id=?", (user_id,)).fetchone() is None:
+                raise ValueError("Profile not found.")
+            pending = self.db.execute(
+                "SELECT COUNT(*) FROM owner_actions WHERE requested_by=? AND status='pending'", (user_id,)
+            ).fetchone()[0]
+            if pending >= 20:
+                raise ValueError("Too many pending owner actions; wait for a decision before adding more.")
+            identity = uuid.uuid4().hex
+            self.db.execute(
+                "INSERT INTO owner_actions(id,requested_by,action,payload,status,created) VALUES(?,?,?,?,?,?)",
+                (identity, user_id, action, encoded, "pending", time.time()),
+            )
+        return self.owner_action(identity)
+
+    def owner_action(self, action_id):
+        if not isinstance(action_id, str):
+            raise ValueError("Owner action not found.")
+        with self.lock:
+            row = self.db.execute("SELECT * FROM owner_actions WHERE id=?", (action_id,)).fetchone()
+            if row is None:
+                raise ValueError("Owner action not found.")
+            return self._owner_action(row)
+
+    @staticmethod
+    def _owner_action(row):
+        try:
+            payload = json.loads(row["payload"])
+        except ValueError:
+            payload = {}
+        return {"id": row["id"], "requested_by": row["requested_by"], "action": row["action"],
+                "payload": payload, "status": row["status"], "created": row["created"],
+                "decided_by": row["decided_by"], "decided_at": row["decided_at"], "error": row["error"] or ""}
+
+    def owner_actions(self, status=None, requested_by=None):
+        query, params = "SELECT * FROM owner_actions", []
+        clauses = []
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        if requested_by:
+            clauses.append("requested_by=?")
+            params.append(requested_by)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created DESC LIMIT 200"
+        with self.lock:
+            return [self._owner_action(row) for row in self.db.execute(query, params)]
+
+    def decide_owner_action(self, action_id, owner_id, status, error=""):
+        if status not in ("approved", "rejected", "failed"):
+            raise ValueError("Invalid owner action decision.")
+        with self.lock, self.db:
+            row = self.db.execute("SELECT * FROM owner_actions WHERE id=?", (action_id,)).fetchone()
+            if row is None:
+                raise ValueError("Owner action not found.")
+            if row["status"] != "pending":
+                raise ValueError("This owner action was already decided.")
+            self.db.execute(
+                "UPDATE owner_actions SET status=?,decided_by=?,decided_at=?,error=? WHERE id=?",
+                (status, owner_id, time.time(), str(error)[:500], action_id),
+            )
+        return self.owner_action(action_id)
 
     def account_id(self, username):
         if not isinstance(username,str):raise ValueError("Account is unavailable.")

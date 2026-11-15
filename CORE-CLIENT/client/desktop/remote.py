@@ -1,5 +1,7 @@
 """Authenticated native API client; cookies and credentials stay in memory."""
 import json
+import platform
+import socket
 import threading
 from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
@@ -35,6 +37,7 @@ class Remote:
         _ = parsed.port
         self.url, self.timeout = url.rstrip("/"), timeout
         self.cookies, self.csrf, self.profile = CookieJar(), "", None
+        self.device_credential = ""
         self.lock = threading.RLock()
         self.opener = build_opener(ProxyHandler({}), NoRedirect(), HTTPCookieProcessor(self.cookies))
 
@@ -58,8 +61,16 @@ class Remote:
             raise RemoteError("CORE server is unavailable; local data remains available.") from exc
 
     def login(self, username, password):
-        result = self.request("POST", "/api/login", {"username": username, "password": password})
+        result = self.request("POST", "/api/login", {
+            "username": username,
+            "password": password,
+            "remember_device": True,
+            "device_name": socket.gethostname()[:80] or "Desktop",
+            "device_type": "desktop",
+            "platform": f"{platform.system()} {platform.release()} ({platform.machine()})"[:120],
+        })
         self.csrf, self.profile = result["csrf"], result["profile"]
+        self.device_credential = result.get("device_credential", "")
         return self.profile
 
     def close(self):

@@ -17,7 +17,7 @@ def login(gateway, username="owner"):
     if gateway.accounts.empty():
         gateway.accounts.create(username, PASSWORD, "Owner", first=True)
     status, body, cookie = gateway.dispatch(
-        "POST", "/api/login", {"username": username, "password": PASSWORD}, {}
+        "POST", "/api/login", {"username": username, "password": PASSWORD, "remember_device": True}, {}
     )
     assert status == 200
     headers = {"Cookie": cookie.split(";", 1)[0], "X-Core-CSRF": body["csrf"]}
