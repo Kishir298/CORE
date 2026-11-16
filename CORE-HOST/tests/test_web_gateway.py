@@ -99,6 +99,24 @@ def test_host_and_origin_guards(gateway):
     gateway.check_request("POST",{"Host":"127.0.0.1:8780","Origin":"http://127.0.0.1:8780","Content-Type":"application/json"})
 
 
+def test_proxied_public_origin_ignores_forwarded_host_spoofing(gateway):
+    gateway.config["public_origin"] = "https://core.example.com"
+    gateway.check_request("POST",{
+        "Host":"core.example.com", "Origin":"https://core.example.com",
+        "Content-Type":"application/json", "X-Forwarded-Host":"evil.example",
+    })
+    for origin in ("http://core.example.com", "https://evil.example", "null"):
+        with pytest.raises(PermissionError):
+            gateway.check_request("POST",{
+                "Host":"core.example.com", "Origin":origin, "Content-Type":"application/json",
+            })
+    with pytest.raises(PermissionError):
+        gateway.check_request("POST",{
+            "Host":"127.0.0.1:8780", "Origin":"https://core.example.com",
+            "Content-Type":"application/json", "X-Forwarded-Host":"core.example.com",
+        })
+
+
 def test_login_attempt_window_is_bounded(gateway):
     for _ in range(5):
         with pytest.raises(PermissionError): gateway.dispatch("POST","/api/login",{"username":"no-user","password":PASSWORD},{})

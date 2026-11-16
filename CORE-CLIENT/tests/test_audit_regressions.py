@@ -96,7 +96,8 @@ def test_tls_setup_failure_closes_raw_socket():
 def test_partial_frame_survives_read_timeout():
     message = {"message_type": "DATA_RESPONSE", "payload": {"ok": True}}
     body = json.dumps(message).encode()
-    chunks = [struct.pack("!I", len(body))[:2], socket.timeout(), struct.pack("!I", len(body))[2:], body]
+    header = struct.pack("!I", len(body))
+    chunks = [header[:2], socket.timeout(), header[2:], body[:3], body[3:]]
     class Sock:
         def gettimeout(self): return 2.0
         def settimeout(self, timeout): pass
