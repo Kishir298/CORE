@@ -18,7 +18,7 @@ def test_application_loads_configuration_on_start(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "core.yaml").write_text(
-        "core:\n  name: C.O.R.E.\n  version: 0.5.0\n"
+        "core:\n  name: C.O.R.E.\n  version: 0.6.0\n"
     )
 
     application = CoreApplication()
@@ -173,7 +173,7 @@ def test_application_restart_reinitializes_without_error(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "core.yaml").write_text(
-        "core:\n  name: C.O.R.E.\n  version: 0.5.0\n"
+        "core:\n  name: C.O.R.E.\n  version: 0.6.0\n"
     )
 
     application = CoreApplication()

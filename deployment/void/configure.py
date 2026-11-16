@@ -11,10 +11,26 @@ import json
 import os
 import secrets
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def _exists(path: Path) -> bool:
     return path.exists() or path.is_symlink()
+
+
+def _validate_origin(origin: str) -> str:
+    parsed = urlsplit(origin)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+        or parsed.username
+        or parsed.password
+    ):
+        raise SystemExit(f"Invalid HTTPS origin: {origin!r}")
+    return origin.rstrip("/")
 
 
 def _write_new(path: Path, text: str) -> None:
@@ -25,6 +41,30 @@ def _write_new(path: Path, text: str) -> None:
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(text)
     path.chmod(0o600)
+
+
+def _replace(path: Path, text: str) -> None:
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _with_env_value(text: str, name: str, value: str) -> str:
+    lines = text.splitlines()
+    replacement = f"{name}={value}"
+    for index, line in enumerate(lines):
+        if line.partition("=")[0] == name:
+            lines[index] = replacement
+            break
+    else:
+        lines.append(replacement)
+    return "\n".join(lines) + "\n"
 
 
 def _rescs_key(base: Path) -> str:
@@ -40,8 +80,8 @@ def _rescs_key(base: Path) -> str:
     raise SystemExit(f"RESCS_API_KEY is missing from {path}; reconcile manually.")
 
 
-def reconcile(base: Path, data: Path) -> None:
-    """Verify existing keys; adopt the canonical gateway only when it is absent."""
+def reconcile(base: Path, data: Path, origin: str | None = None) -> None:
+    """Verify existing keys; adopt or repair gateways without rotating keys."""
     base, data = Path(base), Path(data)
     key = _rescs_key(base)
     canonical = base / "gateway.json"
@@ -60,13 +100,29 @@ def reconcile(base: Path, data: Path) -> None:
             raise SystemExit(f"Cannot read {loaded}; reconcile manually.") from exc
         if not isinstance(loaded_config, dict) or loaded_config.get("rescs_key") != key:
             raise SystemExit(f"{loaded} does not match {base / 'rescs.env'}; reconcile manually.")
-        return
-    loaded.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _write_new(loaded, canonical_text)
+    else:
+        loaded.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        loaded_config = dict(canonical_config)
+        _write_new(loaded, canonical_text)
+
+    if origin is not None:
+        origin = _validate_origin(origin)
+        core_env = base / "core.env"
+        try:
+            core_text = core_env.read_text()
+        except OSError as exc:
+            raise SystemExit(f"Cannot read {core_env}; reconcile manually.") from exc
+        if _with_env_value(core_text, "CORE_PUBLIC_ORIGIN", origin) != core_text:
+            _replace(core_env, _with_env_value(core_text, "CORE_PUBLIC_ORIGIN", origin))
+        for path, config in ((canonical, canonical_config), (loaded, loaded_config)):
+            if config.get("public_origin") != origin:
+                config["public_origin"] = origin
+                _replace(path, json.dumps(config, indent=2) + "\n")
 
 
 def configure(base: Path, data: Path, origin: str) -> None:
     base, data = Path(base), Path(data)
+    origin = _validate_origin(origin)
     data_gateway = data / "core" / "gateway.json"
     targets = [base / name for name in ("core.env", "rescs.env", "gateway.json")]
     targets.append(data_gateway)
@@ -119,11 +175,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="/etc/risarms")
     parser.add_argument("--data", default="/var/lib/risarms")
-    parser.add_argument("--origin", default="https://core.local")
+    parser.add_argument("--origin", default=None)
     parser.add_argument("--reconcile", action="store_true",
                         help="verify existing configuration or adopt a missing CORE gateway")
     args = parser.parse_args()
     if args.reconcile:
-        reconcile(args.base, args.data)
+        reconcile(args.base, args.data, args.origin)
     else:
-        configure(args.base, args.data, args.origin)
+        configure(args.base, args.data, args.origin or "https://core.local")

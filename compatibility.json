@@ -2,45 +2,71 @@
   "schema_version": 1,
   "project": "CORE",
   "display_name": "C.O.R.E. — Communication, Organization and Resource Engine",
-  "version": "0.5.0",
-  "release_channel": "stable",
+  "version": "0.6.0",
+  "release_channel": "beta",
   "standalone": true,
   "components": {
     "host": {
       "package": "core",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "console_scripts": ["core-host"]
     },
     "client": {
       "package": "core-client",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "console_scripts": ["core-client"]
+    },
+    "rescs": {
+      "package": "rescs",
+      "version": "0.4.0",
+      "bundled": true
     }
+  },
+  "server_deployment": {
+    "os": "linux",
+    "distribution": "void",
+    "architectures": ["x86_64"],
+    "libc": "glibc",
+    "init": "runit",
+    "install_methods": ["source-release-archive"],
+    "notes": "CORE 0.6.0 server releases target Void Linux x86_64 glibc only. Other platforms are not supported for the server."
   },
   "supported_operating_systems": [
     {
+      "os": "linux",
+      "distribution": "void",
+      "architectures": ["x86_64"],
+      "role": "server",
+      "libc": "glibc",
+      "init": "runit",
+      "notes": "Release-grade server target. Installer and runit services are shipped from the release archive."
+    },
+    {
       "os": "windows",
       "architectures": ["x86_64", "arm64"],
+      "role": "legacy-client",
       "minimum_version": "10 22H2",
-      "notes": "Host and client run as user-level processes; no WSL required."
+      "notes": "Legacy CORE-CLIENT only. Not part of the CORE 0.6.0 server release."
     },
     {
       "os": "macos",
       "architectures": ["x86_64", "arm64"],
+      "role": "legacy-client",
       "minimum_version": "12.0",
-      "notes": "Client desktop and browser modes are supported on both architectures."
+      "notes": "Legacy CORE-CLIENT only. Desktop and browser modes are delivered by RISARMS-ui 0.6.0."
     },
     {
       "os": "linux",
       "architectures": ["x86_64", "arm64"],
+      "role": "legacy-client",
       "minimum_version": "glibc 2.28",
-      "notes": "Host server deployment package targets systemd on Linux x86_64/ARM64."
+      "notes": "Legacy CORE-CLIENT only. Not part of the CORE 0.6.0 server release."
     }
   ],
   "runtime": {
     "kind": "python",
     "minimum_version": "3.10",
-    "install_methods": ["pip", "pipx", "standalone-executable", "debian-package"]
+    "install_methods": ["source-release-archive", "pip"]
   },
   "core_protocol": {
     "version": "0.4.0",
@@ -51,7 +77,7 @@
   "integrations": ["rescs", "asis", "ascs", "tiviss"],
   "build_metadata": {
     "builder": "GitHub Actions",
-    "artifact_naming": "CORE-{component}-{version}-{os}-{arch}-{format}",
+    "artifact_naming": "CORE-Server-{version}-void-x86_64-{format}",
     "checksums": "SHA-256",
     "sbom": "CycloneDX JSON"
   }

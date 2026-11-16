@@ -4,7 +4,7 @@ Localhost only, no sockets. Locks in the 0.4.0 wire decision:
 - 0.4.0 accepted (client default since CORE-CLIENT 0.4.0).
 - 0.3.0 stays accepted (existing fleet + all wire fixtures).
 - garbage/empty rejected.
-- The package version (0.5.0) is intentionally NOT the wire version.
+- The package version (0.6.0) is intentionally NOT the wire version.
 """
 
 from core.communication.protocol import (
@@ -28,7 +28,7 @@ def _register_payload(protocol_version):
 
 def test_supported_protocol_is_independent_of_package_version():
     assert SUPPORTED_PROTOCOL_VERSION == "0.4.0"
-    assert CORE_VERSION == "0.5.0"
+    assert CORE_VERSION == "0.6.0"
 
 
 def test_current_and_previous_wire_versions_accepted():

@@ -1,6 +1,6 @@
 # C.O.R.E.-CLIENT — External-Device Client
 
-**4 November update:** Linux server and native RISARMS Portal app with approval-based messaging/storage and offline fallback. Start with [the new setup guide](docs/risarms-portal-linux-desktop.md); older Windows-only status notes below describe the previous release.
+**CORE 0.6.0 (beta):** CORE-CLIENT remains available for legacy protocol clients, but the current CORE server release targets **Void Linux x86_64 glibc with runit** only. RISARMS-ui 0.6.0 is the supported desktop application. Windows/macOS host notes below are historical.
 
 **Installed terminal command:** `core-client`. See [installation and commands](docs/terminal-commands.md).
 
@@ -11,7 +11,7 @@ Open the host's HTTPS URL in any browser, or run `open-core.cmd` (Windows) /
 The native TCP client described below remains available.
 
 
-**Version:** `0.4.0` (protocol-compatible with C.O.R.E.-HOST v0.4.0; wire negotiates 0.3.0–0.4.0)
+**Version:** `0.6.0` (protocol-compatible with C.O.R.E.-HOST v0.6.0; wire negotiates 0.3.0–0.4.0)
 **Status:** **Implementation Complete · Physical LAN Validation Pending**
 **Platform:** macOS / Linux / any Python `>=3.10` device
 **R.I.S.A.R.M.S. subsystem:** C.O.R.E. client

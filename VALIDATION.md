@@ -1,5 +1,12 @@
 # Release validation
 
+> [!WARNING]
+> Historical Pi evidence from 6 November 2026, preserved as originally
+> recorded. It is not CORE 0.6.0 Void validation. See `README.md` and
+> `deployment/void/README.md` for the current target. The 2026-11-16 local
+> evidence is 911 host tests passed / 4 skipped and 225 client tests passed /
+> 1 skipped.
+
 6 November 2026. Linux x86_64, Python 3.12. Source code, controlled failures and actual loopback services were used. This is an experimental Pi deployment; no actual ARM64 execution or physical hardware test was performed.
 
 | Suite | Passed | Skipped | Failures |

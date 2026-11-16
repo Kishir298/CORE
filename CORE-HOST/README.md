@@ -1,6 +1,6 @@
 # C.O.R.E.-HOST — Communication, Organization and Resource Engine (Host)
 
-**4 November update:** Linux server and native RISARMS Portal app with approval-based messaging/storage and offline fallback. Start with [the new setup guide](docs/risarms-portal-linux-desktop.md); older Windows-only status notes below describe the previous release.
+**CORE 0.6.0 (beta):** The current server release targets **Void Linux x86_64 glibc with runit** only. Use `../README.md` and `../deployment/void/` for the supported installer, services, backup/restore, upgrade/rollback, and diagnostics. Windows-host, Raspberry Pi, ARM64, and systemd deployment notes below are **historical** and are not part of the 0.6.0 server release. Void hardware install, reboot, rollback, storage-failure, and runtime gates remain pending.
 
 **Installed terminal command:** `core-host`. See [installation and commands](docs/terminal-commands.md).
 

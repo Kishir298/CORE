@@ -3,52 +3,55 @@
 CORE follows independent semantic versioning (`MAJOR.MINOR.PATCH`). The
 current package version is declared in `CORE-HOST/pyproject.toml`,
 `CORE-CLIENT/pyproject.toml`, `CORE-HOST/core/version.py` and
-`compatibility.json`; the release workflow refuses to publish if they differ.
+`compatibility.json`; the release workflow refuses to build if they differ.
 
 The **wire protocol** has its own version (`0.4.0` in
 `CORE-HOST/core/communication/protocol.py`). It is intentionally decoupled
 from the package version, so a package release does not silently change the
 protocol.
 
+## Target
+
+CORE 0.6.0 server releases target **Void Linux x86_64 glibc with runit** only.
+The release archive is a source tree plus the Void installer and deployment
+assets; it is not a portable server binary.
+
 ## Channels
 
 | Channel | Trigger | GitHub Release |
 | --- | --- | --- |
-| Stable | tag `vX.Y.Z` | published, not prerelease |
-| Beta | tag `vX.Y.Z-beta.N` | published as prerelease |
+| Stable | tag `vX.Y.Z` | draft release, not prerelease; requires manifest channel `stable` |
+| Beta | tag `vX.Y.Z-beta.N` | draft prerelease |
 | Development | `workflow_dispatch` | artifacts only, no Release |
 
-Ordinary commits to `main` never publish a stable release; they only run CI.
+The manifest currently declares `release_channel: beta`, so the workflow
+rejects a stable tag until that field is changed intentionally. Releases are
+created with `--draft`; nothing is published automatically.
 
 ## Artifacts
 
-Naming: `CORE-<component>-<version>-<os>-<arch>-<format>`.
+- `CORE-Server-<version>-void-x86_64.tar.gz`
+- `SHA256SUMS`
+- `sbom-<name>.cdx.json`
 
-- `CORE-Host-<v>-windows-x64.zip`, `CORE-Host-<v>-windows-arm64.zip`
-- `CORE-Client-<v>-windows-x64.zip`, `CORE-Client-<v>-windows-arm64.zip`
-- `CORE-Host|Client-<v>-macos-x86_64.tar.gz`
-- `CORE-Host|Client-<v>-macos-arm64.tar.gz`
-- `CORE-Host|Client-<v>-linux-x64.tar.gz`
-- `CORE-Host|Client-<v>-linux-arm64.tar.gz`
-- `CORE-Server-<v>-linux-x64.tar.gz`
-- `CORE-Host|Client-<v>-python-wheel.whl` and `-python-sdist.tar.gz`
-- `SHA256SUMS`, `sbom.cdx.json`
+The archive contains `CORE-HOST/`, `CORE-CLIENT/`, `services/`, `deployment/`,
+`install/`, `validation/`, the compatibility manifest and the release docs.
+The protected paths, checksum file and SBOM are not nested inside it.
 
 ## Process
 
 1. Update the version in both `pyproject.toml` files, `core/version.py`,
-   `compatibility.json` and `CHANGELOG.md`.
-2. Run the full host and client test suites.
-3. Commit, then create and push an annotated tag: `git tag -a vX.Y.Z -m "CORE X.Y.Z"`.
-4. The release workflow validates, tests, builds all targets, verifies
-   artifacts, writes checksums and the SBOM, and publishes the Release.
-5. If any required matrix job fails, the publish job does not run.
+   `compatibility.json` and `CHANGELOG.md`; set `release_channel` deliberately.
+2. Run the full host and client test suites and the deployment static tests.
+3. Commit, then create and push an annotated tag: `git tag -a vX.Y.Z-beta.N -m "CORE X.Y.Z-beta.N"`.
+4. The workflow validates tag/version/channel/manifest agreement, tests, builds
+   the Void archive, writes checksums and the SBOM, and creates a draft release.
+5. A human reviews the draft, records the pending hardware validation, and
+   publishes it only when authorized.
 
-Windows ARM64 is marked experimental because dependency availability differs
-from x64; experimental failures are visible in the run summary and do not
-silently disappear.
+Never create a tag or release as part of an ordinary commit/push.
 
 ## Signing
 
-macOS signing/notarization is only attempted when configured secrets exist.
-Unsigned builds are labelled as such; they are never presented as notarized.
+CORE server archives are not code-signed and CORE has no signed server updater.
+Do not label the release as hardware-certified or signed.

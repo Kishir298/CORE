@@ -1,5 +1,9 @@
 # CORE Pi Server Setup and Changes
 
+> [!WARNING]
+> Historical Pi release note. CORE 0.6.0 targets Void Linux x86_64 glibc with
+> runit on the HP 14. The counts and paths below are preserved as recorded.
+
 Release 0.5.0 | 6 November 2026
 
 This release implements the Raspberry Pi direction in the updated RISARMS plan, including its ASIS and ASCS chapter. The Pi runs the portal, Python backend and RESCS together. Normal operation has no laptop dependency and does not replace Raspberry Pi OS.

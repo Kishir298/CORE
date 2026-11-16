@@ -3,5 +3,7 @@ exec 2>&1
 set -a
 . /etc/risarms/core.env
 set +a
+install -d -m 0700 -o risarms -g risarms /run/risarms-inference
 cd /var/lib/risarms/core || exit 1
+umask 0077
 exec chpst -u risarms:risarms /opt/risarms/core-venv/bin/core-host --gateway-only --no-browser

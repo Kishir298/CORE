@@ -526,7 +526,7 @@ class Gateway:
         gateway = self
         ui = (Path(__file__).parent / "portal.html").read_text()
         class Handler(BaseHTTPRequestHandler):
-            server_version = "COREWeb/0.5"
+            server_version = "COREWeb/0.6"
             def log_message(self, *args): pass
             def setup(self):
                 super().setup(); self.connection.settimeout(15)

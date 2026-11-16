@@ -1,79 +1,94 @@
-# RISARMS Portal for the Raspberry Pi
+# C.O.R.E. Server 0.6.0 (Void Linux x86_64)
 
-Release 0.5.0, 6 November 2026. This combined source package replaces the mandatory laptop backend with a standalone Pi server. Raspberry Pi OS Lite 64-bit stays installed. CORE and RESCS run as separate private services on the SSD. Browser access is primary; RISARMS-UI (the canonical desktop application) and CORE-CLIENT (native protocol client) provide optional offline-capable access.
+CORE 0.6.0 is the RISARMS server release for **Void Linux x86_64 with glibc and runit**. CORE-HOST and RESCS run as separate unprivileged services behind Caddy. The browser portal remains the primary interface; RISARMS-ui 0.6.0 is the separate desktop application.
 
-Read **docs/CORE-Pi-Setup-and-Changes-2026-11-06.docx** or its Markdown equivalent before installation. Read **VALIDATION.md** for executed checks and hardware limits. This is an experimental ARM64 deployment, tested as source on Linux x86_64; it is not a preflashed OS image or a certified Pi appliance.
+**Status: beta, release-candidate source.** The installer and service assets exist, but installation, reboot, rollback, storage-failure, and runtime validation on real Void hardware remain pending. Do not describe this release as hardware-certified.
 
-## Install on the Pi
+## Target hardware
 
-Use a Raspberry Pi 5 8GB with active cooling, suitable power, Ethernet and a separately verified ext4 SSD mounted by UUID at `/srv/core`. Use Python 3.11+; the separate full ASCS runtime requires 3.12+. No installer formats a drive or edits fstab.
+- HP 14-dq1037wm (`7PR51UA#ABA`), x86_64, UEFI, internal storage.
+- Void Linux with glibc and runit.
+- At least 5 GiB free when installing; override only after checking the disk with `RISARMS_MIN_FREE_GIB`.
+- 8 GB installed memory is sufficient for the server and small local models. The planned 2 x 8 GB Samsung DDR4-2666 upgrade is **not installed or verified** yet.
+- Raspberry Pi, ARM64, systemd, Windows-host, and macOS-host server deployments are **historical or unsupported** for this release.
 
-```bash
-sudo apt update
-sudo apt install python3 python3-venv python3-pip caddy avahi-daemon unzip
-findmnt --mountpoint /srv/core
-uname -m
-python3 --version
-# From this RISARMS-Portal folder:
-sudo bash deployment/pi/install.sh
-```
+## Install
 
-The installer requires `aarch64`, a mounted writable ext4 SSD and its UUID. It preserves existing environment files, refuses live-service upgrades, installs software and units, and leaves service enable/start to you. Migrate existing data before the first start; see the guide and `deployment/pi/migrate.py`. Review `/etc/risarms/core.env` and `/etc/risarms/rescs.env` without printing keys to shared logs.
+Review the scripts before running them. The installer does not partition disks, format storage, enable services, or start the portal.
 
 ```bash
-sudo systemctl enable --now risarms-rescs risarms-core
-sudo systemctl reload caddy
-sudo systemctl status risarms-core risarms-rescs
-sudo journalctl -u risarms-core -b --no-pager
+sudo xbps-install -S python3 python3-venv caddy runit-void nftables elogind
+tar -xzf CORE-Server-0.6.0-void-x86_64.tar.gz
+cd CORE-Server-0.6.0-void-x86_64
+sudo ./deployment/void/install.sh
 ```
 
-Open **https://core.local** after trusting Caddy's local root CA on the client. Securely copy only `root.crt` from `/var/lib/caddy/.local/share/caddy/pki/authorities/local`; never copy its private key or disable TLS verification. Use the protected first-run setup key to create your owner account with a new password. No shared owner credential is shipped. Existing migrated password hashes remain valid.
-
-A missing/wrong/read-only SSD blocks startup. Runtime mount removal stops writers; the updated RESCS also checks its required mount on HTTP requests. After recovering the mount, use `systemctl reset-failed`, then restart RESCS and CORE. The static frontend returns a clear API-unavailable error while the backend is down. No laptop, browser window or desktop session is required on the Pi.
-
-## AI preparation
-
-Messaging and storage are independent. Install Ollama explicitly using its official Linux instructions, then stop it before applying `deployment/pi/install-ollama-policy.sh`. This provisions SSD model storage and a service drop-in. It never downloads models.
+The default public origin is `https://core.local`. Set a different origin only with a fully qualified HTTPS address:
 
 ```bash
-sudo systemctl stop ollama
-sudo bash deployment/pi/install-ollama-policy.sh
-sudo systemctl enable --now ollama
-ollama pull qwen2.5:0.5b
-sudo systemctl stop risarms-core
-sudo risarms-admin pi-benchmark --model qwen2.5:0.5b
-# Review output and benchmark responsiveness under the intended household workload.
-sudo risarms-admin pi-benchmark --model qwen2.5:0.5b --approve
-sudo systemctl start risarms-core
+sudo RISARMS_PUBLIC_ORIGIN=https://core.example.test ./deployment/void/install.sh
 ```
 
-Configure the approved exact tag in owner Host settings `models.asis`. For owner code generation, prepare a matching `qwen2.5-coder` tier and benchmark with `--service ascs`, then set `models.ascs`. No real model benchmark was run for this delivery.
+Review these files before enabling anything:
 
-Pi policy starts at 2048 context, two inference threads, one active inference, one loaded model and 60-second idle retention. Every job needs an approved installed digest/context/device receipt. Small tiers are 0.5B, 1.5B and conditional 3B; 4B/7B+ are blocked. Effective memory, reserve, resident weights, ten-second CPU pressure, load, PSI and temperature control admission. The dashboard reports reasons. The queue holds up to eight jobs, one per profile, with a two-minute wait limit. No silent model substitution, preload prompts, remote fallback or action replay occurs.
+- `/etc/risarms/core.env`
+- `/etc/risarms/rescs.env`
+- `/etc/risarms/gateway.json`
+- `/etc/caddy/risarms/portal.caddy`
+- `/etc/nftables.d/risarms.nft`
 
-The shared root-owned `/run/risarms-inference/queue.lock` coordinates CORE with updated standalone ASCS. Other managed callers must cooperate with that same lock. Only approved resident models are unloaded during a CORE model switch; unrelated residents require explicit operator action.
+Enable the services explicitly:
 
-**ASCS generates code only in the Pi portal. It does not execute code or edit repositories.** Full ASIS tools, full ASCS execution and TIVISS execution are blocked by this privacy profile until an actual sandbox/ARM64 runtime is validated. Their standalone sources are retained. Updated ASCS has its own protected Pi path; its manifest and thresholds differ from CORE's centralized tool-free adapter. Do not run its full legacy engine as the CORE/RESCS account.
+```bash
+sudo ln -s /etc/sv/risarms-rescs /var/service/
+sudo ln -s /etc/sv/risarms-core /var/service/
+sudo ln -s /etc/sv/caddy /var/service/
+sudo sv status risarms-core risarms-rescs caddy
+sudo risarms-doctor
+```
 
-## Files and privacy
+The first-owner setup key is written to the CORE log:
 
-The browser includes metadata listings/search, explicit plain-text preview/download, 8 MiB uploads, private folders, explicit read-only folder shares, Trash/restore and permanent purge. The initial account quota is 250 MiB including Trash; owner `/api/quotas` may set 8 MiB to 10 GiB. File bytes stay in RESCS; folder/share/trash metadata is in CORE `library.sqlite3`. Back them up together. Legacy files without catalog entries appear in the account's My Files root.
+```bash
+sudo tail -n 50 /var/log/risarms/core/current
+```
 
-Owner admin routes require password re-entry for five minutes; this never grants private content belonging to other accounts. The gateway derives identity from the session and signs per-request RESCS owner/method/path assertions. ROOT/OS operators can inspect plaintext; client-side encryption remains deferred. Keep ports 8780 (HTTPS API), 8781 (loopback event channel), 8081 and 11434 private.
+Trust Caddy's local CA on the client before opening `https://core.local`. Copy only the public root certificate, never the private key.
 
-Browser use over your LAN requires no internet. When disconnected from the Pi, use RISARMS-UI for cached files/records, device credentials and provisioned local AI; there is no browser service-worker cache. Native certificate trust must also be configured. `core-host`, `core-client` and `rescs` remain separate installed commands. Use systemd to manage Pi daemons and `sudo risarms-admin` for service-account diagnostics/benchmarking.
+## Operations
 
-## Other applications and remote access
+```bash
+sudo risarms-backup
+sudo risarms-restore --yes /var/lib/risarms/backups/risarms-<stamp>.tar.gz
+sudo risarms-upgrade /path/to/new/CORE-Server-<version>-void-x86_64
+sudo risarms-rollback
+sudo risarms-doctor
+```
 
-Set verified `links.our_library` and `links.day_quest` URLs in owner Host settings. These apps retain separate installations, accounts and data. This package does not contain their source or merge authentication. Never share raw RESCS directories with Samba.
+- Backups include CORE data, RESCS data, frontend files, `/etc/risarms`, and RISARMS Caddy/nftables/elogind/runit configuration. They contain secrets and are written with mode `0600`.
+- Backups are not encrypted by the installer. Store copies only on media with equivalent protection.
+- Upgrade builds versioned virtual environments and switches stable symlinks. Rollback switches those symlinks back; database and configuration rollback use `risarms-restore`.
+- RESCS uses SQLite under `/var/lib/risarms/rescs/database`. Back up CORE and RESCS together.
+- CORE listens on loopback ports 8780 and 8781; RESCS listens on 8081. Caddy exposes HTTPS and the portal.
+- Caddy uses its internal CA. The nftables include is validated but not loaded automatically.
 
-Tailscale is optional for private away-from-home use. Configure a single canonical tailnet hostname consistently in Caddy, `CORE_PUBLIC_ORIGIN` and clients, and retain certificate trust/HTTPS. No public URL, DNS, cloud subscription or router forwarding is created here.
+## Release assets
 
-## Package contents and handoff
+- `CORE-Server-<version>-void-x86_64.tar.gz`: source tree, Void installer, runit services, backup/restore/upgrade/rollback/diagnostics scripts.
+- `SHA256SUMS`: checksums for the server archive and SBOM.
+- `sbom-<name>.cdx.json`: CycloneDX SBOM.
+- GitHub releases are created as **drafts** first. No tag, release, or server update signature is published by the workflow automatically.
 
-- Complete CORE-HOST and CORE-CLIENT source, plus current RESCS 0.4 and updated ASCS source; standalone ASIS/TIVISS source.
-- Separate systemd environments and one combined Pi installer; no model weights or ARM64 wheelhouse.
-- Setup/change DOCX and Markdown, `RUN-WITH-OPENCODE.md`, integration prompts, provenance and validation evidence.
-- Universal CORE/CLIENT/RESCS wheels under `install`; dependencies still require installation or an architecture-matched offline wheelhouse.
+## Compatibility and security
 
-For offline provisioning, prepare all dependency wheels on a matching Python/OS/architecture before disconnecting. ARM64 Python 3.13 binary dependency resolution was checked; that is not ARM64 execution. Back up old software, accounts, RESCS DB/files and protected configuration before migration or upgrades.
+- CORE package version: `0.6.0`.
+- CORE protocol: `0.4.0`; supported wire versions are `0.3.0` and `0.4.0`.
+- RESCS bundled version: `0.4.0`.
+- RISARMS-ui desktop target: `0.6.0`, released separately.
+- The compatibility source of truth is `compatibility.json`.
+- Panic, restart, and uninstall behavior are documented in the RISARMS-DOCS deployment guide. Removing `/var/lib/risarms` destroys data.
+- No CORE server update signature is implemented in this release. Do not claim signed server updates.
+
+## Historical deployments
+
+`deployment/pi`, `deployment/linux`, Pi setup guides, `VALIDATION.md`, and systemd-oriented instructions are retained for provenance. They are not current CORE 0.6.0 release targets. See RISARMS-DOCS for migration and validation status.

@@ -2,6 +2,37 @@
 
 All notable changes to CORE are documented here.
 
+## [0.6.0] — 2026-11-16
+
+### Added
+
+- Void Linux x86_64 glibc/runit server release target for the HP 14.
+- Release-grade installer with root/platform checks, a 5 GiB free-space guard,
+  versioned virtual environments, stable symlinks, atomic install-state
+  snapshots and rollback on failure.
+- Caddy site, nftables include, elogind lid-ignore configuration and svlogd
+  rotation (1 MiB, 10 archives, daily).
+- Backup, restore, upgrade, rollback and `risarms-doctor` operators installed to
+  `/usr/local/sbin`.
+- Desktop control channel, per-profile service grants, registered owner-device
+  binding and queued owner actions (from the feature branch).
+- Static deployment tests, compatibility-manifest checks and a Void-only draft
+  release workflow.
+
+### Changed
+
+- Package version is `0.6.0`; `core/version.py` reports `0.6.0` and the wire
+  protocol remains `0.4.0` with `0.3.0` accepted.
+- Server releases ship `CORE-Server-<version>-void-x86_64.tar.gz` only.
+- Raspberry Pi/ARM64, systemd, Windows-host and macOS-host server deployments
+  are historical for this release.
+- Releases are created as drafts and are never published automatically.
+
+### Fixed
+
+- Gateway origin reconciliation no longer rotates the RESCS key.
+- Service logs rotate predictably instead of growing without bound.
+
 ## [0.5.0] — 2026-11-11
 
 ### Added

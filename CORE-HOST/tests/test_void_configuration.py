@@ -97,6 +97,46 @@ def test_reconcile_adopts_canonical_gateway_without_rotating_key(tmp_path):
     assert json.loads(canonical)["rescs_key"] == env_value(base / "rescs.env", "RESCS_API_KEY")
 
 
+def test_first_run_uses_the_requested_data_directory(tmp_path):
+    configure = load_configure()
+    base, data = tmp_path / "etc", tmp_path / "custom-data"
+
+    configure.configure(base, data, "https://core.example.test")
+
+    core_env = (base / "core.env").read_text()
+    rescs_env = (base / "rescs.env").read_text()
+    assert f"CORE_WEB_DATA={data}/core" in core_env
+    assert f"RESCS_DATABASE_URL=sqlite:///{data}/rescs/database/rescs.sqlite3" in rescs_env
+    assert f"RESCS_STORAGE_DIR={data}/rescs/files" in rescs_env
+    assert f"TMPDIR={data}/rescs/tmp" in rescs_env
+
+
+def test_reconcile_updates_origin_without_rotating_the_key(tmp_path):
+    configure = load_configure()
+    base, data = tmp_path / "etc", tmp_path / "data"
+    configure.configure(base, data, "https://old.example.test")
+    key = env_value(base / "rescs.env", "RESCS_API_KEY")
+
+    configure.reconcile(base, data, "https://new.example.test")
+
+    assert env_value(base / "rescs.env", "RESCS_API_KEY") == key
+    assert env_value(base / "core.env", "CORE_PUBLIC_ORIGIN") == "https://new.example.test"
+    for path in (base / "gateway.json", data / "core" / "gateway.json"):
+        payload = json.loads(path.read_text())
+        assert payload["rescs_key"] == key
+        assert payload["public_origin"] == "https://new.example.test"
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["http://core.example.test", "https://core.example.test/path", "https://user:pass@core.example.test"],
+)
+def test_invalid_origins_are_rejected(tmp_path, origin):
+    configure = load_configure()
+    with pytest.raises(SystemExit):
+        configure.configure(tmp_path / "etc", tmp_path / "data", origin)
+
+
 @pytest.mark.parametrize("target", ["canonical", "loaded"])
 def test_reconcile_refuses_an_existing_mismatched_key(tmp_path, target):
     configure = load_configure()
