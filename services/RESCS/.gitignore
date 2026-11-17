@@ -71,6 +71,16 @@ wheels/
 wheelhouse*/
 *.whl
 
+# SSH private keys if dropped into the repo
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
+
 # Default runtime storage (rescs_*_storage/ does not match this path)
 rescs_storage/
 rescs_test_storage/

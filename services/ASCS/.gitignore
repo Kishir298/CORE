@@ -8,6 +8,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
 dist/
 build/
 *.egg-info/
@@ -52,7 +54,7 @@ Thumbs.db
 htmlcov/
 *.log
 
-# uv lock file
+# uv lock file (outer CORE mirror does not track nested lockfiles)
 uv.lock
 
 # Stagnant artifacts
@@ -68,6 +70,16 @@ tls/
 *.pem
 *.key
 *.crt
+
+# SSH private keys if dropped into the repo
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
 
 # Pi release artifacts
 wheel/
