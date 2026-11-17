@@ -84,6 +84,12 @@ xmlcov/
 *.db
 *.sqlite
 *.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 *.tmp
 
 # ASIS persistent user data (lives outside the repo)
@@ -102,6 +108,16 @@ tls/
 *.pem
 *.key
 *.crt
+
+# SSH private keys if dropped into the repo
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
 
 # Pi release artifacts
 wheel/

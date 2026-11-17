@@ -52,3 +52,31 @@ tls/
 *.pem
 *.key
 *.crt
+
+# SSH private keys if dropped into the repo
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
+
+# ASCS workspace state written by the integration layer
+.ascs/
+
+# Local databases (never commit)
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Runtime data / logs
+data/
+runtime/
