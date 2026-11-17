@@ -34,8 +34,9 @@ env/
 config/*.local.*
 config/*.secret.*
 config/secrets/
-# Generic YAML secrets; tracked core.yaml / core.lan.example.yaml remain tracked
+# Generic YAML secrets; core.yaml is local, the LAN example is tracked
 config/*.yaml
+!config/core.lan.example.yaml
 device.json
 
 # Build artifacts
