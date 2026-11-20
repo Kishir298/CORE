@@ -96,6 +96,11 @@ def test_deployment_scripts_are_executable_and_parse():
         VOID / "doctor.sh",
     ]
     for script in scripts:
+        raw = script.read_bytes()
+        assert b"\r\n" not in raw, (
+            f"{script} must use LF line endings; a CRLF checkout breaks "
+            "`bash -n` (see .gitattributes, which forces eol=lf)."
+        )
         if os.name == "posix":
             assert stat.S_IMODE(script.stat().st_mode) & stat.S_IXUSR
         subprocess.run(["bash", "-n", str(script)], check=True)

@@ -1,0 +1,7 @@
+# Shell scripts and runit run scripts must be LF in the working tree on every
+# platform. Windows runners default to core.autocrlf=true, and a CRLF checkout
+# makes `bash -n` fail with "syntax error near unexpected token `$'{\r''"
+# (GitHub Actions: core-host (Windows, full)) and would break a real Void
+# install. `eol=lf` overrides core.autocrlf, so checkout stays LF everywhere.
+*.sh text eol=lf
+deployment/void/etc/sv/** text eol=lf
