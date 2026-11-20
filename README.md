@@ -9,7 +9,7 @@ CORE 0.6.0 is the RISARMS server release for **Void Linux x86_64 with glibc and 
 - HP 14-dq1037wm (`7PR51UA#ABA`), x86_64, UEFI, internal storage.
 - Void Linux with glibc and runit.
 - At least 5 GiB free when installing; override only after checking the disk with `RISARMS_MIN_FREE_GIB`.
-- 8 GB installed memory is sufficient for the server and small local models. The planned 2 x 8 GB Samsung DDR4-2666 upgrade is **not installed or verified** yet.
+- Installed RAM is unverified (an earlier report indicated 4 GB). 8 GB is the recommended minimum for the server and small local models. The planned 2 x 8 GB Samsung DDR4-2666 SO-DIMM upgrade to 16 GB is **not installed or verified** yet.
 - Raspberry Pi, ARM64, systemd, Windows-host, and macOS-host server deployments are **historical or unsupported** for this release.
 
 ## Install
@@ -17,7 +17,7 @@ CORE 0.6.0 is the RISARMS server release for **Void Linux x86_64 with glibc and 
 Review the scripts before running them. The installer does not partition disks, format storage, enable services, or start the portal.
 
 ```bash
-sudo xbps-install -S python3 python3-venv caddy runit-void nftables elogind
+sudo xbps-install -S python3 python3-pip caddy runit-void nftables elogind
 tar -xzf CORE-Server-0.6.0-void-x86_64.tar.gz
 cd CORE-Server-0.6.0-void-x86_64
 sudo ./deployment/void/install.sh

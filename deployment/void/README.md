@@ -5,7 +5,7 @@ This directory is the release-grade CORE 0.6.0 deployment for Void Linux x86_64 
 ## Prerequisites
 
 ```bash
-sudo xbps-install -S python3 python3-venv caddy runit-void nftables elogind
+sudo xbps-install -S python3 python3-pip caddy runit-void nftables elogind
 ```
 
 The installer requires root, x86_64, Void Linux, glibc, and at least 5 GiB free under `/var/lib/risarms`. It does not partition or format storage.

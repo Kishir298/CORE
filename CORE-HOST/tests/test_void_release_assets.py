@@ -1,6 +1,7 @@
 """Static checks for the release-grade Void Linux deployment assets."""
 from __future__ import annotations
 
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -95,7 +96,8 @@ def test_deployment_scripts_are_executable_and_parse():
         VOID / "doctor.sh",
     ]
     for script in scripts:
-        assert stat.S_IMODE(script.stat().st_mode) & stat.S_IXUSR
+        if os.name == "posix":
+            assert stat.S_IMODE(script.stat().st_mode) & stat.S_IXUSR
         subprocess.run(["bash", "-n", str(script)], check=True)
     for name in ("risarms-core", "risarms-rescs"):
         for relative in ("run", "log/run"):

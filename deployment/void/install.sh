@@ -9,6 +9,7 @@ SOURCE=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 risarms_require_root
 risarms_require_void
 risarms_require_commands python3 caddy sv chpst nft useradd install df tar gzip readlink sed ln mv cp find
+python3 -m pip --version >/dev/null 2>&1 || risarms_die "python3-pip is required (Void ships python3 without ensurepip)."
 
 VERSION=$(risarms_version_from_source "$SOURCE")
 PREVIOUS_VERSION=$(risarms_current_version 2>/dev/null || true)
@@ -65,9 +66,9 @@ build_venv() {
     local staging="$RISARMS_APP/venvs/$VERSION/.$name.build.$$"
     install -d -m 0755 "$RISARMS_APP/venvs/$VERSION"
     rm -rf "$staging"
-    python3 -m venv "$staging"
-    "$staging/bin/python" -m pip install --upgrade pip
-    "$staging/bin/python" -m pip install "$source"
+    python3 -m venv --without-pip "$staging"
+    python3 -m pip --python "$staging/bin/python" install --upgrade pip
+    python3 -m pip --python "$staging/bin/python" install "$source"
     "$staging/bin/python" -c "import $3; print('$name ready')"
     rm -rf "$target"
     mv "$staging" "$target"
