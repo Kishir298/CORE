@@ -34,8 +34,9 @@ env/
 config/*.local.*
 config/*.secret.*
 config/secrets/
-# Generic YAML secrets; tracked core.yaml / core.lan.example.yaml remain tracked
+# Generic YAML secrets; core.yaml is local, the LAN example is tracked
 config/*.yaml
+!config/core.lan.example.yaml
 device.json
 
 # Build artifacts
@@ -59,17 +60,6 @@ Desktop.ini
 # C.O.R.E. runtime persistence (Windows host)
 var/
 *.tmp
-
-# Local SQLite databases / journals (never commit runtime data)
-*.db
-*.sqlite
-*.sqlite3
-*.db-journal
-*.db-wal
-*.db-shm
-*.sqlite-journal
-*.sqlite-wal
-*.sqlite-shm
 
 # TLS material (never commit certificates / private keys)
 *.crt
@@ -106,36 +96,16 @@ tls/
 *.key
 *.crt
 
-# Combined CORE monorepo
-CORE-HOST/.venv/
-CORE-CLIENT/.venv/
-services/*/.venv/
-services/*/dist/
-services/*/build/
-services/*/*.egg-info/
-services/ASCS/ruff_out.txt
-services/ASCS/ruff_output.txt
-*.zip
-*.bundle
-.incoming/
-.backups/
-old-versions/
+# Local SQLite databases / journals (never commit runtime data)
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 
-# Release artifacts and packaging output (built by CI, never committed)
+# PyInstaller spec output (built by the umbrella release workflow)
 *.spec
-*.dmg
-*.msi
-*.AppImage
-*.deb
-*.rpm
-SHA256SUMS
-sbom.cdx.json
-release/
-
-# Signing keys, release credentials and local secret stores
-.secrets/
-secrets/
-*.ed25519
-*.priv
-private-key*
-release-keys/

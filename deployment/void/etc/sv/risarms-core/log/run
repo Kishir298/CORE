@@ -1,2 +1,0 @@
-#!/bin/sh
-exec chpst -u risarms:risarms svlogd -tt /var/log/risarms/core
